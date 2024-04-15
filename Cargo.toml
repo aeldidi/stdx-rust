@@ -1,0 +1,10 @@
+[package]
+name = "stdx"
+version = "0.1.0"
+edition = "2021"
+license = "0BSD OR Unlicense OR CC0-1.0"
+publish = false
+
+[features]
+
+[dependencies]
