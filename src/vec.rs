@@ -1,5 +1,5 @@
-use crate::alloc;
+use core::alloc::Allocator;
 
 struct Vec {
-    alloc: dyn alloc::Allocator,
+    alloc: dyn Allocator,
 }
