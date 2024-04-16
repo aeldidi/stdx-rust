@@ -7,10 +7,8 @@ use core::{
 };
 
 pub mod malloc;
-
-/// This just exists to make the return type of [Allocator::alloc] nicer.
-#[derive(Debug)]
-pub struct OutOfMemory;
+pub mod pool;
+pub mod vmem;
 
 /// An allocator backed by some `[u8]` which simply bumps a pointer within that
 /// buffer to allocate memory.
@@ -52,7 +50,10 @@ impl<'a> FixedBufferAllocator<'a> {
     /// - The memory referenced by `begin` must not be accessed through any
     ///   other pointer for the duration of the lifetime `'a`. Both read and
     ///   write accesses are forbidden.
-    pub unsafe fn from_raw_parts(begin: *mut u8, len: usize) -> FixedBufferAllocator<'a> {
+    pub unsafe fn from_raw_parts(
+        begin: *mut u8,
+        len: usize,
+    ) -> FixedBufferAllocator<'a> {
         let slice = slice::from_raw_parts_mut(begin, len);
         FixedBufferAllocator::from_slice(slice)
     }
@@ -69,7 +70,10 @@ impl<'a> FixedBufferAllocator<'a> {
 }
 
 unsafe impl<'a> Allocator for FixedBufferAllocator<'a> {
-    fn allocate(&self, layout: alloc::Layout) -> Result<NonNull<[u8]>, alloc::AllocError> {
+    fn allocate(
+        &self,
+        layout: alloc::Layout,
+    ) -> Result<NonNull<[u8]>, alloc::AllocError> {
         let size = layout.size();
         let align = layout.align();
         let begin = unsafe { *self.begin.get() };
@@ -101,7 +105,11 @@ unsafe impl<'a> Allocator for FixedBufferAllocator<'a> {
     ) -> Result<NonNull<[u8]>, alloc::AllocError> {
         if old_layout.align() != new_layout.align() {
             let new_ptr = self.allocate(new_layout)?;
-            ptr::copy_nonoverlapping(ptr.as_ptr(), new_ptr.as_ptr() as *mut u8, old_layout.size());
+            ptr::copy_nonoverlapping(
+                ptr.as_ptr(),
+                new_ptr.as_ptr() as *mut u8,
+                old_layout.size(),
+            );
             self.deallocate(ptr, old_layout);
             return Ok(new_ptr);
         }
@@ -248,10 +256,16 @@ mod tests {
 
         assert_eq!(remaining_size(&fba), 1);
 
-        assert!(unsafe { fba.grow(alloc1.cast(), layout(1, 1), layout(2, 1)) }.is_err());
+        assert!(unsafe {
+            fba.grow(alloc1.cast(), layout(1, 1), layout(2, 1))
+        }
+        .is_err());
         assert_eq!(remaining_size(&fba), 1);
 
-        assert!(unsafe { fba.grow(alloc2.cast(), layout(1, 1), layout(2, 1)) }.is_ok());
+        assert!(unsafe {
+            fba.grow(alloc2.cast(), layout(1, 1), layout(2, 1))
+        }
+        .is_ok());
         assert_eq!(remaining_size(&fba), 0);
     }
 }
