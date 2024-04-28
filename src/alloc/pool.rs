@@ -8,3 +8,5 @@ pub struct Pool<'a, T> {
     _alloc: &'a dyn Allocator,
     _marker: PhantomData<T>,
 }
+
+// TODO: implement this

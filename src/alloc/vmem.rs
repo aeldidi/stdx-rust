@@ -32,12 +32,14 @@ impl VirtualMemoryAllocator {
 }
 
 impl Drop for VirtualMemoryAllocator {
+    #[inline(always)]
     fn drop(&mut self) {
         unsafe { vmem::virtual_memory_free(self.addr, self.size) }
     }
 }
 
 unsafe impl Allocator for VirtualMemoryAllocator {
+    #[inline(always)]
     fn allocate(
         &self,
         layout: alloc::Layout,
@@ -45,6 +47,7 @@ unsafe impl Allocator for VirtualMemoryAllocator {
         self.fba.allocate(layout)
     }
 
+    #[inline(always)]
     unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: alloc::Layout) {
         self.fba.deallocate(ptr, layout)
     }
@@ -54,10 +57,10 @@ unsafe impl Allocator for VirtualMemoryAllocator {
 mod vmem {
     use core::{alloc::AllocError, ffi::c_int, ptr};
 
-    const PROT_READ: c_int = 1;
-    const PROT_WRITE: c_int = 2;
+    const PROT_READ: c_int = 1 << 0;
+    const PROT_WRITE: c_int = 1 << 1;
 
-    const MAP_PRIVATE: c_int = 1;
+    const MAP_PRIVATE: c_int = 1 << 1;
     #[cfg(any(
         target_os = "macos",
         target_os = "openbsd",
@@ -65,11 +68,11 @@ mod vmem {
         target_os = "netbsd",
         target_os = "dragonfly",
     ))]
-    const MAP_ANON: c_int = 0x1000;
+    const MAP_ANON: c_int = 1 << 12;
     #[cfg(target_os = "linux")]
-    const MAP_ANON: c_int = 0x20;
+    const MAP_ANON: c_int = 1 << 5;
 
-    const MAP_FAILED: usize = !0;
+    const MAP_FAILED: usize = usize::MAX;
 
     #[link(name = "c")]
     extern "C" {

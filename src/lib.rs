@@ -1,15 +1,18 @@
-#![no_std]
-#![feature(strict_provenance, allocator_api)] // Used in alloc
+#![cfg_attr(not(doc), no_std)]
+#![feature(strict_provenance, allocator_api, cfg_version)]
 
 //! # `stdx`
 //! A set of extensions to `std`.
 
-/// A set of allocators implementing [Allocator] for different use
-/// cases.
+/// A useful set of allocators which can provide better performance than
+/// general purpose allocators depending on your usage pattern.
 pub mod alloc;
-/// A dynamic array which explicitly takes an [Allocator] and allows handling
-/// of out-of-memory situations.
-pub mod vec;
+/// A dynamic array as well as building blocks for creating data structures
+/// containing them.
+pub mod array;
+/// Operations and utilities which allow access to implementation details of a
+/// particular Rust compiler version.
+pub mod unstable;
 
 #[cfg(test)]
 mod tests {}
