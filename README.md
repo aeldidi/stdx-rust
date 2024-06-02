@@ -8,8 +8,8 @@ Why?
 ----
 
 The goal is to reduce the amount of code as much as possible, and using good
-API design help [shepherd][1] anyone making use of it to write faster and more
-robust software.
+API design to help [shepherd][1] anyone making use of it to write faster and
+more robust software.
 
 Some concrete improvements I mean to make in compared to `std`:
 

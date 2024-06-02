@@ -83,9 +83,9 @@ pub struct FixedBufferAllocator<'a> {
     /// [alloc::AllocError] when it allocates.
     ///
     /// However, it also means we lose that static guarantee that the pointer's
-    /// aren't `null`. In practice this doesn't mean much since that's just a
-    /// single invalid pointer value and we're already doing all the necessary
-    /// leg work to make this safe to use.
+    /// aren't `null`. In practice this doesn't mean much since `null` is just
+    /// one of many possible invalid pointer values and we're already doing all
+    /// the necessary leg work to make this safe to use.
     begin: UnsafeCell<*mut u8>,
     /// `end` points to one byte past the end of the buffer. In other words, if
     /// `begin >= end`, `begin` does not point to valid memory.
