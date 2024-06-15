@@ -157,7 +157,6 @@ unsafe impl<'a> Allocator for FixedBufferAllocator<'a> {
         }
     }
 
-    // TODO: do something similar for shrink
     unsafe fn grow(
         &self,
         ptr: NonNull<u8>,
@@ -197,6 +196,49 @@ unsafe impl<'a> Allocator for FixedBufferAllocator<'a> {
             return Err(alloc::AllocError);
         }
 
+        self.begin.get().write(begin.offset(difference));
+        Ok(NonNull::new_unchecked(slice::from_raw_parts_mut(
+            begin.with_addr(prev_begin),
+            new_layout.size(),
+        )))
+    }
+
+    unsafe fn shrink(
+        &self,
+        ptr: NonNull<u8>,
+        old_layout: alloc::Layout,
+        new_layout: alloc::Layout,
+    ) -> Result<NonNull<[u8]>, alloc::AllocError> {
+        if old_layout.align() != new_layout.align() {
+            let new_ptr = self.allocate(new_layout)?;
+            ptr::copy_nonoverlapping(
+                ptr.as_ptr(),
+                new_ptr.as_ptr() as *mut u8,
+                old_layout.size(),
+            );
+            self.deallocate(ptr, old_layout);
+            return Ok(new_ptr);
+        }
+
+        let begin = *self.begin.get();
+        let old_size = old_layout.size();
+        let new_size = new_layout.size();
+        let align = new_layout.align();
+
+        // SAFETY: A condition of this function is that ptr was previously
+        //         allocated, meaning we don't have to worry about the case
+        //         where this underflows.
+        let prev_begin = (begin.addr() - old_size) & !(align - 1);
+        if ptr.as_ptr().cast_const() != begin.with_addr(prev_begin) {
+            // We can only resize if it was the last thing we allocated.
+            return Err(alloc::AllocError);
+        }
+
+        // SAFETY: We know this won't overflow since shrink is only safe to
+        //         call if new_layout.size() <= old_layout.size(), meaning
+        //         that the begin pointer will end up somewhere between where
+        //         it was before allocating this object and where it is now.
+        let difference = new_size as isize - old_size as isize;
         self.begin.get().write(begin.offset(difference));
         Ok(NonNull::new_unchecked(slice::from_raw_parts_mut(
             begin.with_addr(prev_begin),

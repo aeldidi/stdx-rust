@@ -19,7 +19,7 @@ impl VirtualMemoryAllocator {
     pub fn new(
         size: usize,
     ) -> Result<VirtualMemoryAllocator, alloc::AllocError> {
-        unsafe { vmem::virtual_memory_alloc(size) }.map(|addr| {
+        unsafe { internal::virtual_memory_alloc(size) }.map(|addr| {
             VirtualMemoryAllocator {
                 addr,
                 size,
@@ -34,7 +34,7 @@ impl VirtualMemoryAllocator {
 impl Drop for VirtualMemoryAllocator {
     #[inline(always)]
     fn drop(&mut self) {
-        unsafe { vmem::virtual_memory_free(self.addr, self.size) }
+        unsafe { internal::virtual_memory_free(self.addr, self.size) }
     }
 }
 
@@ -54,7 +54,7 @@ unsafe impl Allocator for VirtualMemoryAllocator {
 }
 
 #[cfg(unix)]
-mod vmem {
+mod internal {
     use core::{alloc::AllocError, ffi::c_int, ptr};
 
     const PROT_READ: c_int = 1 << 0;
