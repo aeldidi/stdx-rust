@@ -2,7 +2,7 @@ use core::{
     alloc::{self, Allocator, Layout, LayoutError},
     marker::PhantomData,
     mem,
-    ops::{Deref, DerefMut, Index, IndexMut},
+    ops::{self, Deref, DerefMut},
     ptr::{self, NonNull},
     slice::{self, SliceIndex},
 };
@@ -46,7 +46,7 @@ pub struct RawArray<T> {
     length: usize,
 }
 
-impl<T> Deref for RawArray<T> {
+impl<T> ops::Deref for RawArray<T> {
     type Target = [T];
 
     fn deref(&self) -> &Self::Target {
@@ -54,7 +54,7 @@ impl<T> Deref for RawArray<T> {
     }
 }
 
-impl<T> DerefMut for RawArray<T> {
+impl<T> ops::DerefMut for RawArray<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         unsafe { slice::from_raw_parts_mut(self.data.as_ptr(), self.length) }
     }
@@ -149,8 +149,8 @@ impl<T> RawArray<T> {
     ///
     /// # Safety
     ///
-    /// The methods on this object are safe to use as long as you use the same
-    /// allocator every time.
+    /// This method is safe to use as long as you use the same allocator for
+    /// all methods on this object.
     pub unsafe fn reserve(
         &mut self,
         additional: usize,
@@ -213,8 +213,8 @@ impl<T> RawArray<T> {
     ///
     /// # Safety
     ///
-    /// The methods on this object are safe to use as long as you use the same
-    /// allocator every time.
+    /// This method is safe to use as long as you use the same allocator for
+    /// all methods on this object.
     #[inline]
     pub unsafe fn push(
         &mut self,
@@ -277,8 +277,8 @@ impl<T> RawArray<T> {
     ///
     /// # Safety
     ///
-    /// The methods on this object are safe to use as long as you use the same
-    /// allocator every time.
+    /// This method is safe to use as long as you use the same allocator for
+    /// all methods on this object.
     pub unsafe fn append(
         &mut self,
         other: &mut RawArray<T>,
@@ -298,6 +298,187 @@ impl<T> RawArray<T> {
         }
 
         Ok(())
+    }
+
+    /// Inserts an element at the given `index` in the [RawArray], shifting
+    /// everything after it to the right.
+    ///
+    /// # Safety
+    ///
+    /// This method is safe to use as long as you use the same allocator for
+    /// all methods on this object.
+    #[inline]
+    pub unsafe fn insert(
+        &mut self,
+        index: usize,
+        value: T,
+        alloc: impl Allocator,
+    ) -> Result<Option<()>, alloc::AllocError> {
+        if index > self.length {
+            return Ok(None);
+        }
+
+        self.insert_unchecked(index, value, alloc)?;
+        Ok(Some(()))
+    }
+
+    /// Inserts an element at the given `index` in the [RawArray], shifting
+    /// everything after it to the right.
+    ///
+    /// # Safety
+    ///
+    /// This function is safe to use if the following is true:
+    /// - `index` is within the bounds of the [RawArray].
+    /// - The same allocator is used for all methods on this object.
+    pub unsafe fn insert_unchecked(
+        &mut self,
+        index: usize,
+        value: T,
+        alloc: impl Allocator,
+    ) -> Result<(), alloc::AllocError> {
+        if index == self.length {
+            return self.push(value, alloc);
+        }
+
+        self.reserve(1, alloc)?;
+
+        // SAFETY: At this point we know this won't overflow because
+        //         1. This is the unsafe version of the function so we're
+        //            already assuming index < self.len().
+        //         2. Since reserve allocated successfully, we know the offset
+        //            won't overflow.
+        let offset = mem::size_of::<T>().unchecked_mul(index);
+        let base = self.data.as_ptr().map_addr(|a| a.unchecked_add(offset));
+        let count = mem::size_of::<T>()
+            .unchecked_mul(self.length.unchecked_sub(index));
+        ptr::copy(
+            base,
+            base.map_addr(|a| a.unchecked_add(mem::size_of::<T>())),
+            count,
+        );
+
+        ptr::write(base, value);
+        Ok(())
+    }
+
+    /// Removes and returns the element at the given `index`, shifting
+    /// everything after it to the left.
+    ///
+    /// If the given `index` is out of bounds, returns [`Option::None`].
+    #[inline]
+    pub fn remove(&mut self, index: usize) -> Option<T> {
+        if index == self.length - 1 {
+            return self.pop();
+        }
+
+        if index >= self.length {
+            return None;
+        }
+
+        // SAFETY: this is safe because we already checked that the index is in
+        //         bounds.
+        Some(unsafe { self.remove_unchecked(index) })
+    }
+
+    /// Removes and returns the element at the given `index`, shifting
+    /// everything after it to the left.
+    ///
+    /// # Safety
+    ///
+    /// This function is safe to use if the `index` is in bounds.
+    pub unsafe fn remove_unchecked(&mut self, index: usize) -> T {
+        // SAFETY: we immediately set this before it is ever actually used so
+        //         this is fine.
+        let mut result =
+            unsafe { mem::MaybeUninit::<T>::uninit().assume_init() };
+        // SAFETY: we know this is safe because the index is in bounds. We are
+        //         just manually moving the object out.
+        unsafe {
+            let offset = mem::size_of::<T>().unchecked_mul(index);
+            let addr =
+                self.data.as_ptr().map_addr(|a| a.unchecked_add(offset));
+            result = ptr::read(addr);
+            ptr::copy(
+                addr.map_addr(|a| a.unchecked_add(mem::size_of::<T>())),
+                addr,
+                self.length.unchecked_sub(index),
+            );
+        }
+
+        self.length -= 1;
+
+        result
+    }
+
+    /// Removes and returns the element at the given `index`, swapping it with
+    /// the last element in the array.
+    ///
+    /// If the given `index` is out of bounds, returns [`Option::None`].
+    pub fn swap_remove(&mut self, index: usize) -> Option<T> {
+        if index == self.length - 1 {
+            return self.pop();
+        }
+
+        if index >= self.length {
+            return None;
+        }
+
+        // SAFETY: we know this is safe because we've checked that the index is
+        //         in bounds.
+        return Some(unsafe { self.swap_remove_unchecked(index) });
+    }
+
+    /// Removes and returns the element at the given `index`, swapping it with
+    /// the last element in the array.
+    ///
+    /// If the given `index` is out of bounds, returns [`Option::None`].
+    ///
+    /// # Safety
+    ///
+    /// This function is safe to use if the `index` is in bounds.
+    pub unsafe fn swap_remove_unchecked(&mut self, index: usize) -> T {
+        // SAFETY: we immediately set this before it is ever actually used so
+        //         this is fine.
+        let mut result =
+            unsafe { mem::MaybeUninit::<T>::uninit().assume_init() };
+        // SAFETY: we know this is safe because the index is in bounds. We are
+        //         just manually moving the object out.
+        unsafe {
+            let offset = mem::size_of::<T>().unchecked_mul(index);
+            let end_offset = mem::size_of::<T>()
+                .unchecked_mul(self.length.unchecked_sub(1));
+            let addr =
+                self.data.as_ptr().map_addr(|a| a.unchecked_add(offset));
+            let end_addr =
+                self.data.as_ptr().map_addr(|a| a.unchecked_add(end_offset));
+            result = ptr::read(addr);
+            ptr::write(addr, ptr::read(end_addr));
+        }
+
+        self.length -= 1;
+
+        result
+    }
+
+    /// Truncates the [RawArray] to be less than or equal to the given `len`.
+    /// If the [RawArray]'s length is greater than the given `len`, the extra
+    /// elements are dropped.
+    pub fn truncate(&mut self, len: usize) {
+        if self.length <= len {
+            return;
+        }
+
+        for i in (len - 1)..self.length {
+            // SAFETY: we know this is safe because we've already checked that
+            //         the index is in bounds.
+            unsafe {
+                let offset = mem::size_of::<T>().unchecked_mul(i);
+                let addr =
+                    self.data.as_ptr().map_addr(|a| a.unchecked_add(offset));
+                ptr::drop_in_place(addr);
+            }
+        }
+        self.length = len;
     }
 }
 
