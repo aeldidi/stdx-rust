@@ -1,5 +1,13 @@
 #![cfg_attr(not(doc), no_std)]
-#![feature(strict_provenance, allocator_api, cfg_version)]
+#![feature(
+    strict_provenance,
+    allocator_api,
+    cfg_version,
+    const_mut_refs,
+    const_ptr_write,
+    non_null_convenience,
+    const_intrinsic_copy
+)]
 
 //! # `stdx`
 //! A set of extensions to `std`.

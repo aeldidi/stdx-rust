@@ -1,10 +1,10 @@
 use core::{
-    alloc::{self, Allocator, Layout, LayoutError},
+    alloc::{self, Allocator, Layout},
     marker::PhantomData,
     mem,
     ops::{self, Deref, DerefMut},
     ptr::{self, NonNull},
-    slice::{self, SliceIndex},
+    slice,
 };
 
 /// A dynamic array type whose elements are placed in contiguous memory.
@@ -20,26 +20,60 @@ use core::{
 /// So since `stdx` is meant to have custom allocators be a first-class
 /// feature, the API will not be exactly the same, justifying the difference in
 /// name.
-pub struct Array<T> {
+pub struct Array<'a, T> {
     arr: RawArray<T>,
-    alloc: dyn Allocator,
+    alloc: &'a dyn Allocator,
 }
 
-/// An [Array<T>] without the allocator contained inside. All methods on this
-/// will take an allocator as a parameter. Care must be taken to ensure the
-/// same allocator is used each time.
-///
-/// This is similar to how [Vec] takes an [Allocator] as a parameter, but with
-/// the caveat that the allocator is not stored anywhere and is assumed to be
-/// stored somewhere else.
-///
-/// The point of this is to avoid storing multiple of the same [Allocator] when
-/// stored in a struct.
-pub struct SubArray<T, A: Allocator> {
-    arr: RawArray<T>,
-    _marker: PhantomData<A>,
+impl<T> ops::Deref for Array<'_, T> {
+    type Target = [T];
+
+    fn deref(&self) -> &Self::Target {
+        self.arr.deref()
+    }
 }
 
+impl<T> ops::DerefMut for Array<'_, T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.arr.deref_mut()
+    }
+}
+
+impl<'a, T> Array<'a, T> {
+    /// # Safety
+    ///
+    /// This function is safe to use if the following is true:
+    /// - If capacity is some x >= 0, data points to enough memory to contain x
+    ///   elements of type T.
+    /// - If length is some y >= 0, y <= x.
+    /// - If length is 0, so is capacity.
+    /// - If capacity is 0, data's value is irrelevant.
+    #[inline]
+    pub const unsafe fn from_raw_parts(
+        data: NonNull<T>,
+        capacity: usize,
+        length: usize,
+        alloc: &'a impl Allocator,
+    ) -> Array<'a, T> {
+        Self {
+            arr: RawArray::from_raw_parts(data, capacity, length),
+            alloc,
+        }
+    }
+
+    /// Returns a new empty [Array] using the allocator `alloc`.
+    #[inline]
+    pub const fn new(alloc: &'a impl Allocator) -> Array<'a, T> {
+        Array {
+            arr: RawArray::new(),
+            alloc,
+        }
+    }
+}
+
+/// An [Array] without the allocator stored inline. Useful for embedding in
+/// other data structures. Most methods on this are unsafe since they assume
+/// the same allocator is passed every time.
 pub struct RawArray<T> {
     data: NonNull<T>,
     capacity: usize,
@@ -70,7 +104,7 @@ impl<T> RawArray<T> {
     /// - If length is 0, so is capacity.
     /// - If capacity is 0, data's value is irrelevant.
     #[inline]
-    pub unsafe fn from_raw_parts(
+    pub const unsafe fn from_raw_parts(
         data: NonNull<T>,
         capacity: usize,
         length: usize,
@@ -117,21 +151,15 @@ impl<T> RawArray<T> {
 
     /// Returns the length of the [RawArray].
     #[inline]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.length
     }
 
     /// Returns the total number of elements the vector can hold without
     /// reallocating.
     #[inline]
-    pub fn capacity(&self) -> usize {
+    pub const fn capacity(&self) -> usize {
         self.capacity
-    }
-
-    /// Returns true if the [RawArray] is empty.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.length == 0
     }
 
     /// Tries to reserve enough memory for at least `additional` extra elements
@@ -215,7 +243,6 @@ impl<T> RawArray<T> {
     ///
     /// This method is safe to use as long as you use the same allocator for
     /// all methods on this object.
-    #[inline]
     pub unsafe fn push(
         &mut self,
         value: T,
@@ -242,8 +269,7 @@ impl<T> RawArray<T> {
 
     /// Removes the last element from a vector and returns it, or [`None`] if
     /// it is empty.
-    #[inline]
-    pub fn pop(&mut self) -> Option<T> {
+    pub const fn pop(&mut self) -> Option<T> {
         if self.length == 0 {
             return None;
         }
@@ -256,7 +282,6 @@ impl<T> RawArray<T> {
         Some(unsafe { ptr::read(self.data.as_ptr().byte_add(offset)) })
     }
 
-    #[inline]
     pub fn clear(&mut self) {
         let elements = self.deref_mut().as_mut_ptr();
         // SAFETY: We decrease the len before calling drop_in_place because if
@@ -300,6 +325,27 @@ impl<T> RawArray<T> {
         Ok(())
     }
 
+    /// Appends an element to the end of the [RawArray] only if there is enough
+    /// capacity to do so, otherwise the element is returned.
+    ///
+    /// Guaranteed to never allocate memory.
+    pub const fn push_within_capacity(&mut self, value: T) -> Result<(), T> {
+        if self.length >= self.capacity {
+            return Err(value);
+        }
+
+        // SAFETY: we know this is safe because we've already checked that
+        //         self.length is less than self.capacity.
+        unsafe {
+            let offset = mem::size_of::<T>().unchecked_mul(self.length);
+            let dst = self.data.byte_add(offset);
+            ptr::write(dst.as_ptr(), value);
+        }
+
+        self.length += 1;
+        Ok(())
+    }
+
     /// Inserts an element at the given `index` in the [RawArray], shifting
     /// everything after it to the right.
     ///
@@ -307,7 +353,6 @@ impl<T> RawArray<T> {
     ///
     /// This method is safe to use as long as you use the same allocator for
     /// all methods on this object.
-    #[inline]
     pub unsafe fn insert(
         &mut self,
         index: usize,
@@ -348,16 +393,16 @@ impl<T> RawArray<T> {
         //         2. Since reserve allocated successfully, we know the offset
         //            won't overflow.
         let offset = mem::size_of::<T>().unchecked_mul(index);
-        let base = self.data.as_ptr().map_addr(|a| a.unchecked_add(offset));
+        let base = self.data.byte_add(offset);
         let count = mem::size_of::<T>()
             .unchecked_mul(self.length.unchecked_sub(index));
         ptr::copy(
-            base,
-            base.map_addr(|a| a.unchecked_add(mem::size_of::<T>())),
+            base.as_ptr(),
+            base.byte_add(mem::size_of::<T>()).as_ptr(),
             count,
         );
 
-        ptr::write(base, value);
+        ptr::write(base.as_ptr(), value);
         Ok(())
     }
 
@@ -365,8 +410,7 @@ impl<T> RawArray<T> {
     /// everything after it to the left.
     ///
     /// If the given `index` is out of bounds, returns [`Option::None`].
-    #[inline]
-    pub fn remove(&mut self, index: usize) -> Option<T> {
+    pub const fn remove(&mut self, index: usize) -> Option<T> {
         if index == self.length - 1 {
             return self.pop();
         }
@@ -386,24 +430,20 @@ impl<T> RawArray<T> {
     /// # Safety
     ///
     /// This function is safe to use if the `index` is in bounds.
-    pub unsafe fn remove_unchecked(&mut self, index: usize) -> T {
-        // SAFETY: we immediately set this before it is ever actually used so
-        //         this is fine.
-        let mut result =
-            unsafe { mem::MaybeUninit::<T>::uninit().assume_init() };
+    pub const unsafe fn remove_unchecked(&mut self, index: usize) -> T {
         // SAFETY: we know this is safe because the index is in bounds. We are
         //         just manually moving the object out.
-        unsafe {
+        let result = unsafe {
             let offset = mem::size_of::<T>().unchecked_mul(index);
-            let addr =
-                self.data.as_ptr().map_addr(|a| a.unchecked_add(offset));
-            result = ptr::read(addr);
+            let addr = self.data.byte_add(offset);
+            let result = ptr::read(addr.as_ptr());
             ptr::copy(
-                addr.map_addr(|a| a.unchecked_add(mem::size_of::<T>())),
-                addr,
+                addr.byte_add(mem::size_of::<T>()).as_ptr(),
+                addr.as_ptr(),
                 self.length.unchecked_sub(index),
             );
-        }
+            result
+        };
 
         self.length -= 1;
 
@@ -414,7 +454,7 @@ impl<T> RawArray<T> {
     /// the last element in the array.
     ///
     /// If the given `index` is out of bounds, returns [`Option::None`].
-    pub fn swap_remove(&mut self, index: usize) -> Option<T> {
+    pub const fn swap_remove(&mut self, index: usize) -> Option<T> {
         if index == self.length - 1 {
             return self.pop();
         }
@@ -436,24 +476,19 @@ impl<T> RawArray<T> {
     /// # Safety
     ///
     /// This function is safe to use if the `index` is in bounds.
-    pub unsafe fn swap_remove_unchecked(&mut self, index: usize) -> T {
-        // SAFETY: we immediately set this before it is ever actually used so
-        //         this is fine.
-        let mut result =
-            unsafe { mem::MaybeUninit::<T>::uninit().assume_init() };
+    pub const unsafe fn swap_remove_unchecked(&mut self, index: usize) -> T {
         // SAFETY: we know this is safe because the index is in bounds. We are
         //         just manually moving the object out.
-        unsafe {
+        let result = unsafe {
             let offset = mem::size_of::<T>().unchecked_mul(index);
             let end_offset = mem::size_of::<T>()
                 .unchecked_mul(self.length.unchecked_sub(1));
-            let addr =
-                self.data.as_ptr().map_addr(|a| a.unchecked_add(offset));
-            let end_addr =
-                self.data.as_ptr().map_addr(|a| a.unchecked_add(end_offset));
-            result = ptr::read(addr);
-            ptr::write(addr, ptr::read(end_addr));
-        }
+            let addr = self.data.byte_add(offset);
+            let end_addr = self.data.byte_add(end_offset);
+            let result = ptr::read(addr.as_ptr());
+            ptr::write(addr.as_ptr(), ptr::read(end_addr.as_ptr()));
+            result
+        };
 
         self.length -= 1;
 

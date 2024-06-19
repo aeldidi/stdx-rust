@@ -17,7 +17,15 @@ extern "C" {
 }
 
 /// An [Allocator] implementation using the system C allocator.
-pub struct Mallocator;
+pub struct Mallocator {
+    _marker: (),
+}
+
+const INTERNAL_MALLOC: Mallocator = Mallocator { _marker: () };
+
+/// The [Allocator] representing the system C allocator.
+#[allow(non_upper_case_globals)]
+pub const Malloc: &'static Mallocator = &INTERNAL_MALLOC;
 
 unsafe impl Send for Mallocator {}
 unsafe impl Sync for Mallocator {}
@@ -56,8 +64,6 @@ unsafe impl Allocator for Mallocator {
 mod tests {
     use super::*;
 
-    const ALLOC: Mallocator = Mallocator;
-
     fn layout(size: usize, align: usize) -> alloc::Layout {
         alloc::Layout::from_size_align(size, align).unwrap()
     }
@@ -66,10 +72,10 @@ mod tests {
     /// work, rather, its just to ensure we can use the functions successfully.
     #[test]
     fn malloc_works() {
-        let result = ALLOC.allocate(layout(1, 1));
+        let result = Malloc.allocate(layout(1, 1));
         assert!(result.is_ok());
         let alloc = result.unwrap();
         assert_eq!(alloc.len(), 1);
-        unsafe { ALLOC.deallocate(alloc.cast(), layout(1, 1)) };
+        unsafe { Malloc.deallocate(alloc.cast(), layout(1, 1)) };
     }
 }
