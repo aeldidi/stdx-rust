@@ -1,11 +1,172 @@
+#![allow(clippy::len_without_is_empty)]
+
 use core::{
     alloc::{self, Allocator, Layout},
     marker::PhantomData,
     mem,
     ops::{self, Deref, DerefMut},
-    ptr::{self, NonNull},
+    ptr::{self, slice_from_raw_parts_mut, NonNull},
     slice,
 };
+
+#[inline(always)]
+fn reserve<T>(
+    data: &mut NonNull<T>,
+    length: &mut usize,
+    capacity: &mut usize,
+    additional: usize,
+    alloc: &impl Allocator,
+) -> Result<(), alloc::AllocError> {
+    if *capacity == 0 {
+        // Allocate for the first time.
+        let size = match mem::size_of::<T>().checked_mul(additional) {
+            Some(sz) => sz,
+            None => return Err(alloc::AllocError),
+        };
+        let layout = match Layout::from_size_align(size, mem::align_of::<T>())
+        {
+            Ok(layout) => layout,
+            Err(_) => return Err(alloc::AllocError),
+        };
+        let result = alloc.allocate(layout)?;
+        let size = result.len();
+        *data = result.cast();
+        *capacity = size;
+        *length = 0;
+        return Ok(());
+    }
+    let old_size = match mem::size_of::<T>().checked_mul(*capacity) {
+        Some(sz) => sz,
+        None => return Err(alloc::AllocError),
+    };
+    let new_size = {
+        let tmp = match capacity.checked_add(additional) {
+            Some(x) => x,
+            None => return Err(alloc::AllocError),
+        };
+        match mem::size_of::<T>().checked_mul(tmp) {
+            Some(x) => x,
+            None => return Err(alloc::AllocError),
+        }
+    };
+
+    let old_layout =
+        match Layout::from_size_align(old_size, mem::align_of::<T>()) {
+            Ok(l) => l,
+            Err(_) => return Err(alloc::AllocError),
+        };
+    let new_layout =
+        match Layout::from_size_align(new_size, mem::align_of::<T>()) {
+            Ok(l) => l,
+            Err(_) => return Err(alloc::AllocError),
+        };
+    // SAFETY: we know ptr is currently allocated, we know old_layout is the
+    //         layout of ptr, and we know
+    //         new_layout.size() >= old_layout.size().
+    let result = unsafe { alloc.grow(data.cast(), old_layout, new_layout)? };
+    let size = result.len();
+    *data = result.cast();
+    *capacity = size;
+    Ok(())
+}
+
+#[inline(always)]
+unsafe fn push<T>(
+    data: &mut NonNull<T>,
+    length: &mut usize,
+    capacity: &mut usize,
+    value: T,
+    alloc: &impl Allocator,
+) -> Result<(), alloc::AllocError> {
+    if *capacity == 0 {
+        reserve(data, length, capacity, 16, alloc)?;
+    } else {
+        reserve(data, length, capacity, 1, alloc)?;
+    }
+
+    let offset = match mem::size_of::<T>().checked_mul(*capacity) {
+        Some(x) => {
+            if x > isize::MAX as usize {
+                return Err(alloc::AllocError);
+            }
+            x as isize
+        }
+        None => return Err(alloc::AllocError),
+    };
+    *data.as_ptr().byte_offset(offset) = value;
+    Ok(())
+}
+
+#[inline(always)]
+fn with_capacity<T>(
+    capacity: usize,
+    alloc: &impl Allocator,
+) -> Result<(NonNull<T>, usize), alloc::AllocError> {
+    let layout = match Layout::from_size_align(
+        mem::size_of::<T>() * capacity,
+        mem::align_of::<T>(),
+    ) {
+        Ok(l) => l,
+        Err(_) => return Err(alloc::AllocError),
+    };
+    let mem = alloc.allocate(layout)?;
+    let capacity = mem.len();
+    Ok((mem.cast(), capacity))
+}
+
+#[inline(always)]
+const unsafe fn pop<T>(data: &mut NonNull<T>, length: &mut usize) -> T {
+    *length -= 1;
+    let offset = *length * mem::size_of::<T>();
+    ptr::read(mem::transmute(data.as_ptr().byte_add(offset)))
+}
+
+#[inline(always)]
+fn clear<T>(data: &mut NonNull<T>, length: &mut usize) {
+    let elements = slice_from_raw_parts_mut(data.as_ptr(), *length);
+    // SAFETY: we set the length to 0 before dropping all the elements because
+    //         in the case where drop panics on an element, we don't want to
+    //         try to drop the element again when dropping the array.
+    unsafe {
+        *length = 0;
+        ptr::drop_in_place(elements)
+    }
+}
+
+#[inline(always)]
+fn append<T>(
+    data: &mut NonNull<T>,
+    length: &mut usize,
+    capacity: &mut usize,
+    alloc: &impl Allocator,
+    other_data: NonNull<T>,
+    other_length: usize,
+) -> Result<(), alloc::AllocError> {
+    reserve(data, length, capacity, other_length, alloc)?;
+    for i in 0..other_length {
+        // SAFETY: we can use unchecked arithmetic here because these things
+        //         are already located at the computed offsets, meaning they
+        //         can't overflow here.
+        //
+        //         For the write, we know it can't overflow since we already
+        //         computed the size in reserve().
+        unsafe {
+            let value = ptr::read(
+                other_data
+                    .as_ptr()
+                    .byte_add(i.unchecked_mul(mem::size_of::<T>())),
+            );
+            ptr::write(
+                data.as_ptr().byte_add(
+                    (i.unchecked_add(*length))
+                        .unchecked_mul(mem::size_of::<T>()),
+                ),
+                value,
+            );
+        }
+    }
+    Ok(())
+}
 
 /// A dynamic array type whose elements are placed in contiguous memory.
 ///
@@ -129,21 +290,12 @@ impl<T> RawArray<T> {
     /// Returns a new [RawArray] with the given capacity.
     #[inline]
     pub fn with_capacity(
-        alloc: impl Allocator,
         capacity: usize,
+        alloc: impl Allocator,
     ) -> Result<RawArray<T>, alloc::AllocError> {
-        let layout = match Layout::from_size_align(
-            mem::size_of::<T>() * capacity,
-            mem::align_of::<T>(),
-        ) {
-            Ok(l) => l,
-            Err(_) => return Err(alloc::AllocError),
-        };
-        let mem = alloc.allocate(layout)?;
-        let capacity = mem.len();
-
+        let (data, capacity) = with_capacity(capacity, &alloc)?;
         Ok(RawArray {
-            data: mem.cast(),
+            data,
             length: 0,
             capacity,
         })
@@ -184,47 +336,13 @@ impl<T> RawArray<T> {
         additional: usize,
         alloc: impl Allocator,
     ) -> Result<(), alloc::AllocError> {
-        if self.capacity == 0 {
-            // Allocate for the first time.
-            let size = match mem::size_of::<T>().checked_mul(additional) {
-                Some(sz) => sz,
-                None => return Err(alloc::AllocError),
-            };
-
-            let result = alloc.allocate(Layout::from_size_align_unchecked(
-                size,
-                mem::align_of::<T>(),
-            ))?;
-            let size = result.len();
-            self.data = result.cast();
-            self.capacity = size;
-            self.length = 0;
-            return Ok(());
-        }
-        let old_size = match mem::size_of::<T>().checked_mul(self.capacity) {
-            Some(sz) => sz,
-            None => return Err(alloc::AllocError),
-        };
-        let new_size = {
-            let tmp = match self.capacity.checked_add(additional) {
-                Some(x) => x,
-                None => return Err(alloc::AllocError),
-            };
-            match mem::size_of::<T>().checked_mul(tmp) {
-                Some(x) => x,
-                None => return Err(alloc::AllocError),
-            }
-        };
-
-        let result = alloc.grow(
-            self.data.cast(),
-            Layout::from_size_align_unchecked(old_size, mem::align_of::<T>()),
-            Layout::from_size_align_unchecked(new_size, mem::align_of::<T>()),
-        )?;
-        let size = result.len();
-        self.data = result.cast();
-        self.capacity = size;
-        Ok(())
+        reserve(
+            &mut self.data,
+            &mut self.length,
+            &mut self.capacity,
+            additional,
+            &alloc,
+        )
     }
 
     /// Appends an element to the back of the [RawArray].
@@ -248,23 +366,13 @@ impl<T> RawArray<T> {
         value: T,
         alloc: impl Allocator,
     ) -> Result<(), alloc::AllocError> {
-        if self.capacity == 0 {
-            self.reserve(16, alloc)?;
-        } else {
-            self.reserve(1, alloc)?;
-        }
-
-        let offset = match mem::size_of::<T>().checked_mul(self.capacity) {
-            Some(x) => {
-                if x > isize::MAX as usize {
-                    return Err(alloc::AllocError);
-                }
-                x as isize
-            }
-            None => return Err(alloc::AllocError),
-        };
-        *self.data.as_ptr().byte_offset(offset) = value;
-        Ok(())
+        push(
+            &mut self.data,
+            &mut self.length,
+            &mut self.capacity,
+            value,
+            &alloc,
+        )
     }
 
     /// Removes the last element from a vector and returns it, or [`None`] if
@@ -274,24 +382,11 @@ impl<T> RawArray<T> {
             return None;
         }
 
-        self.length -= 1;
-        let offset = self.length * mem::size_of::<T>();
-        // SAFETY: We're just manually moving it here. The memory underneath it
-        //         can no longer be validly accessed so there's no worry about
-        //         someone still reading the value from the array.
-        Some(unsafe { ptr::read(self.data.as_ptr().byte_add(offset)) })
+        Some(unsafe { pop(&mut self.data, &mut self.length) })
     }
 
     pub fn clear(&mut self) {
-        let elements = self.deref_mut().as_mut_ptr();
-        // SAFETY: We decrease the len before calling drop_in_place because if
-        //         dropping the value panics we don't want to also call drop on
-        //         the RawArray (which would cause all the elements to be
-        //         dropped again).
-        unsafe {
-            self.length = 0;
-            ptr::drop_in_place(elements)
-        }
+        clear(&mut self.data, &mut self.length)
     }
 
     /// Moves all elements out of `other` into `self`, leaving `other` empty.
@@ -309,20 +404,14 @@ impl<T> RawArray<T> {
         other: &mut RawArray<T>,
         alloc: impl Allocator,
     ) -> Result<(), alloc::AllocError> {
-        self.reserve(other.length, alloc)?;
-        for i in 0..other.length {
-            let value = ptr::read(
-                other.data.as_ptr().byte_add(i * mem::size_of::<T>()),
-            );
-            ptr::write(
-                self.data
-                    .as_ptr()
-                    .byte_add((i + self.length) * mem::size_of::<T>()),
-                value,
-            );
-        }
-
-        Ok(())
+        append(
+            &mut self.data,
+            &mut self.length,
+            &mut self.capacity,
+            &alloc,
+            other.data,
+            other.length,
+        )
     }
 
     /// Appends an element to the end of the [RawArray] only if there is enough
@@ -465,7 +554,7 @@ impl<T> RawArray<T> {
 
         // SAFETY: we know this is safe because we've checked that the index is
         //         in bounds.
-        return Some(unsafe { self.swap_remove_unchecked(index) });
+        Some(unsafe { self.swap_remove_unchecked(index) })
     }
 
     /// Removes and returns the element at the given `index`, swapping it with

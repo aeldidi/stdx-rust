@@ -6,7 +6,8 @@
     const_mut_refs,
     const_ptr_write,
     non_null_convenience,
-    const_intrinsic_copy
+    const_intrinsic_copy,
+    unchecked_math
 )]
 
 //! # `stdx`
