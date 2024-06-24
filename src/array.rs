@@ -14,7 +14,7 @@ use core::{
 /// This method is safe to use as long as you use the same allocator is used
 /// each time the same data referenced is used.
 #[inline(always)]
-fn reserve<T>(
+unsafe fn reserve<T>(
     data: &mut NonNull<T>,
     length: &mut usize,
     capacity: &mut usize,
@@ -357,7 +357,7 @@ impl<'a, T> Array<'a, T> {
     /// - If length is some y >= 0, y <= x.
     /// - If length is 0, so is capacity.
     /// - If capacity is 0, data's value is irrelevant.
-    #[inline]
+    #[inline(always)]
     pub const unsafe fn from_raw_parts(
         data: NonNull<T>,
         capacity: usize,
@@ -371,12 +371,270 @@ impl<'a, T> Array<'a, T> {
     }
 
     /// Returns a new empty [Array] using the allocator `alloc`.
-    #[inline]
+    #[inline(always)]
     pub const fn new(alloc: &'a impl Allocator) -> Array<'a, T> {
         Array {
             arr: RawArray::new(),
             alloc,
         }
+    }
+
+    /// Returns a new [Array] with the given capacity.
+    #[inline(always)]
+    pub fn with_capacity(
+        capacity: usize,
+        alloc: &'a impl Allocator,
+    ) -> Result<Array<'a, T>, alloc::AllocError> {
+        let (data, capacity) = with_capacity(capacity, &alloc)?;
+        Ok(Array {
+            arr: RawArray {
+                data,
+                length: 0,
+                capacity,
+            },
+            alloc,
+        })
+    }
+
+    /// Returns the length of the [Array].
+    #[inline(always)]
+    pub const fn len(&self) -> usize {
+        self.arr.length
+    }
+
+    /// Returns the total number of elements the vector can hold without
+    /// reallocating.
+    #[inline(always)]
+    pub const fn capacity(&self) -> usize {
+        self.arr.capacity
+    }
+
+    /// Tries to reserve enough memory for at least `additional` extra elements
+    /// to be appended to the end of the [Array]. That is, after calling this
+    /// you can be sure that the next `additional` calls to
+    /// [Array::push] will not allocate and complete in `O(1)` time.
+    ///
+    /// Returns an error if:
+    ///
+    /// - `mem::size_of::<T>() * self.capacity + additional` would overflow.
+    ///
+    /// - `mem::size_of::<T>() * self.capacity + additional > isize::MAX`.
+    ///
+    /// - An allocation failed.
+    pub fn reserve(
+        &mut self,
+        additional: usize,
+    ) -> Result<(), alloc::AllocError> {
+        // SAFETY: we use the same allocator every time
+        unsafe {
+            reserve(
+                &mut self.arr.data,
+                &mut self.arr.length,
+                &mut self.arr.capacity,
+                additional,
+                &self.alloc,
+            )
+        }
+    }
+
+    /// Appends an element to the back of the [Array].
+    ///
+    /// Returns an error if:
+    ///
+    /// - `mem::size_of::<T>() * self.capacity` would overflow.
+    ///
+    /// - `mem::size_of::<T>() * self.capacity > isize::MAX`.
+    ///
+    /// - `mem::size_of::<T>() * self.capacity + 1` would overflow.
+    ///
+    /// - An allocation failed.
+    pub fn push(&mut self, value: T) -> Result<(), alloc::AllocError> {
+        // SAFETY: we use the same allocator every time
+        unsafe {
+            push(
+                &mut self.arr.data,
+                &mut self.arr.length,
+                &mut self.arr.capacity,
+                value,
+                &self.alloc,
+            )
+        }
+    }
+
+    /// Removes the last element from a vector and returns it, or [`None`] if
+    /// it is empty.
+    pub const fn pop(&mut self) -> Option<T> {
+        if self.arr.length == 0 {
+            return None;
+        }
+
+        // SAFETY: we already checked that there is actually something to pop.
+        Some(unsafe { pop(&mut self.arr.data, &mut self.arr.length) })
+    }
+
+    /// Removes all values from the [Array].
+    pub fn clear(&mut self) {
+        clear(&mut self.arr.data, &mut self.arr.length)
+    }
+
+    /// Moves all elements out of `other` into `self`, leaving `other` empty.
+    ///
+    /// Returns an error if:
+    ///
+    /// - An allocation failure occurs.
+    pub fn append(
+        &mut self,
+        other: &mut Array<T>,
+    ) -> Result<(), alloc::AllocError> {
+        // SAFETY: we use the same allocator every time
+        unsafe {
+            append(
+                &mut self.arr.data,
+                &mut self.arr.length,
+                &mut self.arr.capacity,
+                &self.alloc,
+                other.arr.data,
+                other.arr.length,
+            )
+        }
+    }
+
+    /// Appends an element to the end of the [Array] only if there is enough
+    /// capacity to do so, otherwise the element is returned.
+    ///
+    /// Guaranteed to never allocate memory.
+    pub const fn push_within_capacity(&mut self, value: T) -> Result<(), T> {
+        push_within_capacity(
+            &mut self.arr.data,
+            &mut self.arr.length,
+            &mut self.arr.capacity,
+            value,
+        )
+    }
+
+    /// Inserts an element at the given `index` in the [Array], shifting
+    /// everything after it to the right.
+    pub fn insert(
+        &mut self,
+        index: usize,
+        value: T,
+    ) -> Result<Option<()>, alloc::AllocError> {
+        if index > self.arr.length {
+            return Ok(None);
+        }
+
+        // SAFETY: we use the same allocator every time, and we already checked
+        //         that it was in bounds.
+        unsafe {
+            insert_unchecked(
+                &mut self.arr.data,
+                &mut self.arr.length,
+                &mut self.arr.capacity,
+                &self.alloc,
+                index,
+                value,
+            )?
+        };
+        Ok(Some(()))
+    }
+
+    /// Inserts an element at the given `index` in the [Array], shifting
+    /// everything after it to the right.
+    ///
+    /// # Safety
+    ///
+    /// This function is safe to use if the following is true:
+    /// - `index` is within the bounds of the [Array].
+    /// - The same allocator is used for all methods on this object.
+    pub unsafe fn insert_unchecked(
+        &mut self,
+        index: usize,
+        value: T,
+    ) -> Result<(), alloc::AllocError> {
+        insert_unchecked(
+            &mut self.arr.data,
+            &mut self.arr.length,
+            &mut self.arr.capacity,
+            &self.alloc,
+            index,
+            value,
+        )
+    }
+
+    /// Removes and returns the element at the given `index`, shifting
+    /// everything after it to the left.
+    ///
+    /// If the given `index` is out of bounds, returns [`Option::None`].
+    pub const fn remove(&mut self, index: usize) -> Option<T> {
+        if index == self.arr.length - 1 {
+            // SAFETY: we already checked that there's something to pop.
+            return Some(unsafe {
+                pop(&mut self.arr.data, &mut self.arr.length)
+            });
+        }
+
+        if index >= self.arr.length {
+            return None;
+        }
+
+        // SAFETY: this is safe because we already checked that the index is in
+        //         bounds.
+        Some(unsafe {
+            remove_unchecked(&mut self.arr.data, &mut self.arr.length, index)
+        })
+    }
+
+    /// Removes and returns the element at the given `index`, shifting
+    /// everything after it to the left.
+    ///
+    /// # Safety
+    ///
+    /// This function is safe to use if the `index` is in bounds.
+    pub const unsafe fn remove_unchecked(&mut self, index: usize) -> T {
+        remove_unchecked(&mut self.arr.data, &mut self.arr.length, index)
+    }
+
+    /// Removes and returns the element at the given `index`, swapping it with
+    /// the last element in the array.
+    ///
+    /// If the given `index` is out of bounds, returns [`Option::None`].
+    pub const fn swap_remove(&mut self, index: usize) -> Option<T> {
+        if index == self.arr.length - 1 {
+            return self.pop();
+        }
+
+        if index >= self.arr.length {
+            return None;
+        }
+
+        // SAFETY: we know this is safe because we've checked that the index is
+        //         in bounds.
+        Some(unsafe {
+            swap_remove_unchecked(
+                &mut self.arr.data,
+                &mut self.arr.length,
+                index,
+            )
+        })
+    }
+
+    /// Removes and returns the element at the given `index`, swapping it with
+    /// the last element in the array.
+    ///
+    /// If the given `index` is out of bounds, returns [`Option::None`].
+    ///
+    /// # Safety
+    ///
+    /// This function is safe to use if the `index` is in bounds.
+    pub const unsafe fn swap_remove_unchecked(&mut self, index: usize) -> T {
+        swap_remove_unchecked(&mut self.arr.data, &mut self.arr.length, index)
+    }
+
+    /// Truncates the [Array] to be less than or equal to the given `len`.
+    /// If the [Array]'s length is greater than the given `len`, the extra
+    /// elements are dropped.
+    pub fn truncate(&mut self, len: usize) {
+        truncate(&mut self.arr.data, &mut self.arr.length, len)
     }
 }
 
@@ -426,7 +684,7 @@ impl<T> RawArray<T> {
     }
 
     /// Returns a new empty [RawArray]
-    #[inline]
+    #[inline(always)]
     pub const fn new() -> RawArray<T> {
         RawArray {
             data: NonNull::dangling(),
@@ -436,7 +694,7 @@ impl<T> RawArray<T> {
     }
 
     /// Returns a new [RawArray] with the given capacity.
-    #[inline]
+    #[inline(always)]
     pub fn with_capacity(
         capacity: usize,
         alloc: impl Allocator,
@@ -450,14 +708,14 @@ impl<T> RawArray<T> {
     }
 
     /// Returns the length of the [RawArray].
-    #[inline]
+    #[inline(always)]
     pub const fn len(&self) -> usize {
         self.length
     }
 
     /// Returns the total number of elements the vector can hold without
     /// reallocating.
-    #[inline]
+    #[inline(always)]
     pub const fn capacity(&self) -> usize {
         self.capacity
     }
@@ -530,9 +788,11 @@ impl<T> RawArray<T> {
             return None;
         }
 
+        // SAFETY: we already checked that there is actually something to pop.
         Some(unsafe { pop(&mut self.data, &mut self.length) })
     }
 
+    /// Removes all values from the [Array].
     pub fn clear(&mut self) {
         clear(&mut self.data, &mut self.length)
     }
@@ -633,7 +893,8 @@ impl<T> RawArray<T> {
     /// If the given `index` is out of bounds, returns [`Option::None`].
     pub const fn remove(&mut self, index: usize) -> Option<T> {
         if index == self.length - 1 {
-            return self.pop();
+            // SAFETY: we already checked that there is something to pop.
+            return Some(unsafe { pop(&mut self.data, &mut self.length) });
         }
 
         if index >= self.length {
