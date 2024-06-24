@@ -9,6 +9,10 @@ use core::{
     slice,
 };
 
+/// # Safety
+///
+/// This method is safe to use as long as you use the same allocator is used
+/// each time the same data referenced is used.
 #[inline(always)]
 fn reserve<T>(
     data: &mut NonNull<T>,
@@ -70,6 +74,10 @@ fn reserve<T>(
     Ok(())
 }
 
+/// # Safety
+///
+/// This method is safe to use as long as you use the same allocator is used
+/// each time the same data referenced is used.
 #[inline(always)]
 unsafe fn push<T>(
     data: &mut NonNull<T>,
@@ -114,6 +122,9 @@ fn with_capacity<T>(
     Ok((mem.cast(), capacity))
 }
 
+/// # Safety
+///
+/// This function is safe to call if there is actually something to pop.
 #[inline(always)]
 const unsafe fn pop<T>(data: &mut NonNull<T>, length: &mut usize) -> T {
     *length -= 1;
@@ -133,8 +144,12 @@ fn clear<T>(data: &mut NonNull<T>, length: &mut usize) {
     }
 }
 
+/// # Safety
+///
+/// This method is safe to use as long as you use the same allocator is used
+/// each time the same data referenced is used.
 #[inline(always)]
-fn append<T>(
+unsafe fn append<T>(
     data: &mut NonNull<T>,
     length: &mut usize,
     capacity: &mut usize,
@@ -166,6 +181,139 @@ fn append<T>(
         }
     }
     Ok(())
+}
+
+#[inline(always)]
+const fn push_within_capacity<T>(
+    data: &mut NonNull<T>,
+    length: &mut usize,
+    capacity: &mut usize,
+    value: T,
+) -> Result<(), T> {
+    if *length >= *capacity {
+        return Err(value);
+    }
+
+    // SAFETY: we already checked that the length is within bounds.
+    unsafe {
+        let offset = mem::size_of::<T>().unchecked_mul(*length);
+        let dst = data.byte_add(offset);
+        ptr::write(dst.as_ptr(), value);
+    }
+
+    *length += 1;
+    Ok(())
+}
+
+/// # Safety
+///
+/// This function is safe to use if the following is true:
+/// - `index` is within the bounds of length.
+/// - The same allocator is used each time the same data referenced is used.
+#[inline(always)]
+unsafe fn insert_unchecked<T>(
+    data: &mut NonNull<T>,
+    length: &mut usize,
+    capacity: &mut usize,
+    alloc: &impl Allocator,
+    index: usize,
+    value: T,
+) -> Result<(), alloc::AllocError> {
+    if index == *length {
+        return push(data, length, capacity, value, alloc);
+    }
+
+    reserve(data, length, capacity, 1, alloc)?;
+
+    // SAFETY: At this point we know this won't overflow because
+    //         1. This is the unsafe version of the function so we're
+    //            already assuming index < self.len().
+    //         2. Since reserve allocated successfully, we know the offset
+    //            won't overflow.
+    let offset = mem::size_of::<T>().unchecked_mul(index);
+    let base = data.byte_add(offset);
+    let count = mem::size_of::<T>().unchecked_mul(length.unchecked_sub(index));
+    ptr::copy(
+        base.as_ptr(),
+        base.byte_add(mem::size_of::<T>()).as_ptr(),
+        count,
+    );
+
+    ptr::write(base.as_ptr(), value);
+    Ok(())
+}
+
+/// # Safety
+///
+/// This function is safe to use if the `index` is in bounds.
+#[inline(always)]
+const unsafe fn remove_unchecked<T>(
+    data: &mut NonNull<T>,
+    length: &mut usize,
+    index: usize,
+) -> T {
+    // SAFETY: we know this is safe because the index is in bounds. We are
+    //         just manually moving the object out.
+    let result = {
+        let offset = mem::size_of::<T>().unchecked_mul(index);
+        let addr = data.byte_add(offset);
+        let result = ptr::read(addr.as_ptr());
+        ptr::copy(
+            addr.byte_add(mem::size_of::<T>()).as_ptr(),
+            addr.as_ptr(),
+            length.unchecked_sub(index),
+        );
+        result
+    };
+
+    *length -= 1;
+
+    result
+}
+
+/// # Safety
+///
+/// This function is safe to use if the `index` is in bounds.
+#[inline(always)]
+const unsafe fn swap_remove_unchecked<T>(
+    data: &mut NonNull<T>,
+    length: &mut usize,
+    index: usize,
+) -> T {
+    // SAFETY: we know this is safe because the index is in bounds. We are
+    //         just manually moving the object out.
+    let result = unsafe {
+        let offset = mem::size_of::<T>().unchecked_mul(index);
+        let end_offset =
+            mem::size_of::<T>().unchecked_mul(length.unchecked_sub(1));
+        let addr = data.byte_add(offset);
+        let end_addr = data.byte_add(end_offset);
+        let result = ptr::read(addr.as_ptr());
+        ptr::write(addr.as_ptr(), ptr::read(end_addr.as_ptr()));
+        result
+    };
+
+    *length -= 1;
+
+    result
+}
+
+#[inline(always)]
+fn truncate<T>(data: &mut NonNull<T>, length: &mut usize, len: usize) {
+    if *length <= len {
+        return;
+    }
+
+    for i in (len - 1)..*length {
+        // SAFETY: we know this is safe because we've already checked that
+        //         the index is in bounds.
+        unsafe {
+            let offset = mem::size_of::<T>().unchecked_mul(i);
+            let addr = data.as_ptr().map_addr(|a| a.unchecked_add(offset));
+            ptr::drop_in_place(addr);
+        }
+    }
+    *length = len;
 }
 
 /// A dynamic array type whose elements are placed in contiguous memory.
@@ -419,20 +567,12 @@ impl<T> RawArray<T> {
     ///
     /// Guaranteed to never allocate memory.
     pub const fn push_within_capacity(&mut self, value: T) -> Result<(), T> {
-        if self.length >= self.capacity {
-            return Err(value);
-        }
-
-        // SAFETY: we know this is safe because we've already checked that
-        //         self.length is less than self.capacity.
-        unsafe {
-            let offset = mem::size_of::<T>().unchecked_mul(self.length);
-            let dst = self.data.byte_add(offset);
-            ptr::write(dst.as_ptr(), value);
-        }
-
-        self.length += 1;
-        Ok(())
+        push_within_capacity(
+            &mut self.data,
+            &mut self.length,
+            &mut self.capacity,
+            value,
+        )
     }
 
     /// Inserts an element at the given `index` in the [RawArray], shifting
@@ -452,7 +592,14 @@ impl<T> RawArray<T> {
             return Ok(None);
         }
 
-        self.insert_unchecked(index, value, alloc)?;
+        insert_unchecked(
+            &mut self.data,
+            &mut self.length,
+            &mut self.capacity,
+            &alloc,
+            index,
+            value,
+        )?;
         Ok(Some(()))
     }
 
@@ -470,29 +617,14 @@ impl<T> RawArray<T> {
         value: T,
         alloc: impl Allocator,
     ) -> Result<(), alloc::AllocError> {
-        if index == self.length {
-            return self.push(value, alloc);
-        }
-
-        self.reserve(1, alloc)?;
-
-        // SAFETY: At this point we know this won't overflow because
-        //         1. This is the unsafe version of the function so we're
-        //            already assuming index < self.len().
-        //         2. Since reserve allocated successfully, we know the offset
-        //            won't overflow.
-        let offset = mem::size_of::<T>().unchecked_mul(index);
-        let base = self.data.byte_add(offset);
-        let count = mem::size_of::<T>()
-            .unchecked_mul(self.length.unchecked_sub(index));
-        ptr::copy(
-            base.as_ptr(),
-            base.byte_add(mem::size_of::<T>()).as_ptr(),
-            count,
-        );
-
-        ptr::write(base.as_ptr(), value);
-        Ok(())
+        insert_unchecked(
+            &mut self.data,
+            &mut self.length,
+            &mut self.capacity,
+            &alloc,
+            index,
+            value,
+        )
     }
 
     /// Removes and returns the element at the given `index`, shifting
@@ -510,7 +642,9 @@ impl<T> RawArray<T> {
 
         // SAFETY: this is safe because we already checked that the index is in
         //         bounds.
-        Some(unsafe { self.remove_unchecked(index) })
+        Some(unsafe {
+            remove_unchecked(&mut self.data, &mut self.length, index)
+        })
     }
 
     /// Removes and returns the element at the given `index`, shifting
@@ -520,23 +654,7 @@ impl<T> RawArray<T> {
     ///
     /// This function is safe to use if the `index` is in bounds.
     pub const unsafe fn remove_unchecked(&mut self, index: usize) -> T {
-        // SAFETY: we know this is safe because the index is in bounds. We are
-        //         just manually moving the object out.
-        let result = unsafe {
-            let offset = mem::size_of::<T>().unchecked_mul(index);
-            let addr = self.data.byte_add(offset);
-            let result = ptr::read(addr.as_ptr());
-            ptr::copy(
-                addr.byte_add(mem::size_of::<T>()).as_ptr(),
-                addr.as_ptr(),
-                self.length.unchecked_sub(index),
-            );
-            result
-        };
-
-        self.length -= 1;
-
-        result
+        remove_unchecked(&mut self.data, &mut self.length, index)
     }
 
     /// Removes and returns the element at the given `index`, swapping it with
@@ -554,7 +672,9 @@ impl<T> RawArray<T> {
 
         // SAFETY: we know this is safe because we've checked that the index is
         //         in bounds.
-        Some(unsafe { self.swap_remove_unchecked(index) })
+        Some(unsafe {
+            swap_remove_unchecked(&mut self.data, &mut self.length, index)
+        })
     }
 
     /// Removes and returns the element at the given `index`, swapping it with
@@ -566,43 +686,14 @@ impl<T> RawArray<T> {
     ///
     /// This function is safe to use if the `index` is in bounds.
     pub const unsafe fn swap_remove_unchecked(&mut self, index: usize) -> T {
-        // SAFETY: we know this is safe because the index is in bounds. We are
-        //         just manually moving the object out.
-        let result = unsafe {
-            let offset = mem::size_of::<T>().unchecked_mul(index);
-            let end_offset = mem::size_of::<T>()
-                .unchecked_mul(self.length.unchecked_sub(1));
-            let addr = self.data.byte_add(offset);
-            let end_addr = self.data.byte_add(end_offset);
-            let result = ptr::read(addr.as_ptr());
-            ptr::write(addr.as_ptr(), ptr::read(end_addr.as_ptr()));
-            result
-        };
-
-        self.length -= 1;
-
-        result
+        swap_remove_unchecked(&mut self.data, &mut self.length, index)
     }
 
     /// Truncates the [RawArray] to be less than or equal to the given `len`.
     /// If the [RawArray]'s length is greater than the given `len`, the extra
     /// elements are dropped.
     pub fn truncate(&mut self, len: usize) {
-        if self.length <= len {
-            return;
-        }
-
-        for i in (len - 1)..self.length {
-            // SAFETY: we know this is safe because we've already checked that
-            //         the index is in bounds.
-            unsafe {
-                let offset = mem::size_of::<T>().unchecked_mul(i);
-                let addr =
-                    self.data.as_ptr().map_addr(|a| a.unchecked_add(offset));
-                ptr::drop_in_place(addr);
-            }
-        }
-        self.length = len;
+        truncate(&mut self.data, &mut self.length, len)
     }
 }
 
