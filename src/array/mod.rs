@@ -2,8 +2,6 @@
 
 use core::{
     alloc::{self, Allocator, Layout},
-    cmp,
-    marker::PhantomData,
     mem, ops,
     ptr::{self, slice_from_raw_parts_mut, NonNull},
     slice,
@@ -129,7 +127,7 @@ fn with_capacity<T>(
 const unsafe fn pop<T>(data: &mut NonNull<T>, length: &mut usize) -> T {
     *length -= 1;
     let offset = *length * mem::size_of::<T>();
-    ptr::read(mem::transmute(data.as_ptr().byte_add(offset)))
+    ptr::read(data.as_ptr().byte_add(offset))
 }
 
 #[inline(always)]

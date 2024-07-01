@@ -1,0 +1,10 @@
+[package]
+name = "stdx_soa"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+proc_macro = true
+
+[dependencies]
+stdx_rust = { path = "../rust" }

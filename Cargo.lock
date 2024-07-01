@@ -5,3 +5,18 @@ version = 3
 [[package]]
 name = "stdx"
 version = "0.1.0"
+dependencies = [
+ "stdx_rust",
+ "stdx_soa",
+]
+
+[[package]]
+name = "stdx_rust"
+version = "0.1.0"
+
+[[package]]
+name = "stdx_soa"
+version = "0.1.0"
+dependencies = [
+ "stdx_rust",
+]
