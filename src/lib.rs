@@ -7,7 +7,7 @@
     const_ptr_write,
     non_null_convenience,
     const_intrinsic_copy,
-    unchecked_math
+    alloc_layout_extra
 )]
 
 //! # `stdx`
