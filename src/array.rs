@@ -9,8 +9,12 @@ use core::{
     slice,
 };
 
+/// # Safety
+///
+/// This method is safe to use as long as you use the same allocator is used
+/// each time the same data referenced is used.
 #[inline(always)]
-fn reserve<T>(
+unsafe fn reserve<T>(
     data: &mut NonNull<T>,
     length: &mut usize,
     capacity: &mut usize,
@@ -70,6 +74,10 @@ fn reserve<T>(
     Ok(())
 }
 
+/// # Safety
+///
+/// This method is safe to use as long as you use the same allocator is used
+/// each time the same data referenced is used.
 #[inline(always)]
 unsafe fn push<T>(
     data: &mut NonNull<T>,
@@ -114,6 +122,9 @@ fn with_capacity<T>(
     Ok((mem.cast(), capacity))
 }
 
+/// # Safety
+///
+/// This function is safe to call if there is actually something to pop.
 #[inline(always)]
 const unsafe fn pop<T>(data: &mut NonNull<T>, length: &mut usize) -> T {
     *length -= 1;
@@ -133,8 +144,12 @@ fn clear<T>(data: &mut NonNull<T>, length: &mut usize) {
     }
 }
 
+/// # Safety
+///
+/// This method is safe to use as long as you use the same allocator is used
+/// each time the same data referenced is used.
 #[inline(always)]
-fn append<T>(
+unsafe fn append<T>(
     data: &mut NonNull<T>,
     length: &mut usize,
     capacity: &mut usize,
@@ -169,18 +184,32 @@ fn append<T>(
 }
 
 #[inline(always)]
-const unsafe fn push_within_capacity<T>(
+const fn push_within_capacity<T>(
     data: &mut NonNull<T>,
     length: &mut usize,
+    capacity: &mut usize,
     value: T,
-) {
-    let offset = mem::size_of::<T>().unchecked_mul(*length);
-    let dst = data.byte_add(offset);
-    ptr::write(dst.as_ptr(), value);
+) -> Result<(), T> {
+    if *length >= *capacity {
+        return Err(value);
+    }
+
+    // SAFETY: we already checked that the length is within bounds.
+    unsafe {
+        let offset = mem::size_of::<T>().unchecked_mul(*length);
+        let dst = data.byte_add(offset);
+        ptr::write(dst.as_ptr(), value);
+    }
 
     *length += 1;
+    Ok(())
 }
 
+/// # Safety
+///
+/// This function is safe to use if the following is true:
+/// - `index` is within the bounds of length.
+/// - The same allocator is used each time the same data referenced is used.
 #[inline(always)]
 unsafe fn insert_unchecked<T>(
     data: &mut NonNull<T>,
@@ -214,6 +243,9 @@ unsafe fn insert_unchecked<T>(
     Ok(())
 }
 
+/// # Safety
+///
+/// This function is safe to use if the `index` is in bounds.
 #[inline(always)]
 const unsafe fn remove_unchecked<T>(
     data: &mut NonNull<T>,
@@ -239,6 +271,9 @@ const unsafe fn remove_unchecked<T>(
     result
 }
 
+/// # Safety
+///
+/// This function is safe to use if the `index` is in bounds.
 #[inline(always)]
 const unsafe fn swap_remove_unchecked<T>(
     data: &mut NonNull<T>,
@@ -324,7 +359,7 @@ impl<'a, T> Array<'a, T> {
     /// - If length is some y >= 0, y <= x.
     /// - If length is 0, so is capacity.
     /// - If capacity is 0, data's value is irrelevant.
-    #[inline]
+    #[inline(always)]
     pub const unsafe fn from_raw_parts(
         data: NonNull<T>,
         capacity: usize,
@@ -340,7 +375,7 @@ impl<'a, T> Array<'a, T> {
     }
 
     /// Returns a new empty [Array] using the allocator `alloc`.
-    #[inline]
+    #[inline(always)]
     pub const fn new(alloc: &'a impl Allocator) -> Array<'a, T> {
         Array {
             data: NonNull::dangling(),
@@ -351,7 +386,7 @@ impl<'a, T> Array<'a, T> {
     }
 
     /// Returns a new [Array] with the given capacity.
-    #[inline]
+    #[inline(always)]
     pub fn with_capacity(
         capacity: usize,
         alloc: &'a impl Allocator,
@@ -366,14 +401,14 @@ impl<'a, T> Array<'a, T> {
     }
 
     /// Returns the length of the [Array].
-    #[inline]
+    #[inline(always)]
     pub const fn len(&self) -> usize {
         self.length
     }
 
     /// Returns the total number of elements the vector can hold without
     /// reallocating.
-    #[inline]
+    #[inline(always)]
     pub const fn capacity(&self) -> usize {
         self.capacity
     }
@@ -390,22 +425,20 @@ impl<'a, T> Array<'a, T> {
     /// - `mem::size_of::<T>() * self.capacity + additional > isize::MAX`.
     ///
     /// - An allocation failed.
-    ///
-    /// # Safety
-    ///
-    /// This method is safe to use as long as you use the same allocator for
-    /// all methods on this object.
-    pub unsafe fn reserve(
+    pub fn reserve(
         &mut self,
         additional: usize,
     ) -> Result<(), alloc::AllocError> {
-        reserve(
-            &mut self.data,
-            &mut self.length,
-            &mut self.capacity,
-            additional,
-            &self.alloc,
-        )
+        // SAFETY: we use the same allocator every time
+        unsafe {
+            reserve(
+                &mut self.data,
+                &mut self.length,
+                &mut self.capacity,
+                additional,
+                &self.alloc,
+            )
+        }
     }
 
     /// Appends an element to the back of the [Array].
@@ -419,19 +452,17 @@ impl<'a, T> Array<'a, T> {
     /// - `mem::size_of::<T>() * self.capacity + 1` would overflow.
     ///
     /// - An allocation failed.
-    ///
-    /// # Safety
-    ///
-    /// This method is safe to use as long as you use the same allocator for
-    /// all methods on this object.
-    pub unsafe fn push(&mut self, value: T) -> Result<(), alloc::AllocError> {
-        push(
-            &mut self.data,
-            &mut self.length,
-            &mut self.capacity,
-            value,
-            &self.alloc,
-        )
+    pub fn push(&mut self, value: T) -> Result<(), alloc::AllocError> {
+        // SAFETY: we use the same allocator every time
+        unsafe {
+            push(
+                &mut self.data,
+                &mut self.length,
+                &mut self.capacity,
+                value,
+                &self.alloc,
+            )
+        }
     }
 
     /// Removes the last element from a vector and returns it, or [`None`] if
@@ -456,23 +487,21 @@ impl<'a, T> Array<'a, T> {
     /// Returns an error if:
     ///
     /// - An allocation failure occurs.
-    ///
-    /// # Safety
-    ///
-    /// This method is safe to use as long as you use the same allocator for
-    /// all methods on this object.
-    pub unsafe fn append(
+    pub fn append(
         &mut self,
         other: &mut Array<T>,
     ) -> Result<(), alloc::AllocError> {
-        append(
-            &mut self.data,
-            &mut self.length,
-            &mut self.capacity,
-            &self.alloc,
-            other.data,
-            other.length,
-        )
+        // SAFETY: we use the same allocator every time
+        unsafe {
+            append(
+                &mut self.data,
+                &mut self.length,
+                &mut self.capacity,
+                &self.alloc,
+                other.data,
+                other.length,
+            )
+        }
     }
 
     /// Appends an element to the end of the [Array] only if there is enough
@@ -480,26 +509,17 @@ impl<'a, T> Array<'a, T> {
     ///
     /// Guaranteed to never allocate memory.
     pub const fn push_within_capacity(&mut self, value: T) -> Result<(), T> {
-        if self.length >= self.capacity {
-            return Err(value);
-        }
-
-        // SAFETY: we know this is safe because we've already checked that
-        //         self.length is less than self.capacity.
-        unsafe {
-            push_within_capacity(&mut self.data, &mut self.length, value)
-        };
-        Ok(())
+        push_within_capacity(
+            &mut self.data,
+            &mut self.length,
+            &mut self.capacity,
+            value,
+        )
     }
 
     /// Inserts an element at the given `index` in the [Array], shifting
     /// everything after it to the right.
-    ///
-    /// # Safety
-    ///
-    /// This method is safe to use as long as you use the same allocator for
-    /// all methods on this object.
-    pub unsafe fn insert(
+    pub fn insert(
         &mut self,
         index: usize,
         value: T,
@@ -508,14 +528,18 @@ impl<'a, T> Array<'a, T> {
             return Ok(None);
         }
 
-        insert_unchecked(
-            &mut self.data,
-            &mut self.length,
-            &mut self.capacity,
-            &self.alloc,
-            index,
-            value,
-        )?;
+        // SAFETY: we use the same allocator every time, and we already checked
+        //         that it was in bounds.
+        unsafe {
+            insert_unchecked(
+                &mut self.data,
+                &mut self.length,
+                &mut self.capacity,
+                &self.alloc,
+                index,
+                value,
+            )?
+        };
         Ok(Some(()))
     }
 
@@ -548,6 +572,7 @@ impl<'a, T> Array<'a, T> {
     /// If the given `index` is out of bounds, returns [`Option::None`].
     pub const fn remove(&mut self, index: usize) -> Option<T> {
         if index == self.length - 1 {
+            // SAFETY: we already checked that there's something to pop
             return Some(unsafe { pop(&mut self.data, &mut self.length) });
         }
 
@@ -658,7 +683,7 @@ impl<T> RawArray<T> {
     }
 
     /// Returns a new empty [RawArray]
-    #[inline]
+    #[inline(always)]
     pub const fn new() -> RawArray<T> {
         RawArray {
             data: NonNull::dangling(),
@@ -668,7 +693,7 @@ impl<T> RawArray<T> {
     }
 
     /// Returns a new [RawArray] with the given capacity.
-    #[inline]
+    #[inline(always)]
     pub fn with_capacity(
         capacity: usize,
         alloc: impl Allocator,
@@ -682,14 +707,14 @@ impl<T> RawArray<T> {
     }
 
     /// Returns the length of the [RawArray].
-    #[inline]
+    #[inline(always)]
     pub const fn len(&self) -> usize {
         self.length
     }
 
     /// Returns the total number of elements the vector can hold without
     /// reallocating.
-    #[inline]
+    #[inline(always)]
     pub const fn capacity(&self) -> usize {
         self.capacity
     }
@@ -802,16 +827,12 @@ impl<T> RawArray<T> {
     ///
     /// Guaranteed to never allocate memory.
     pub const fn push_within_capacity(&mut self, value: T) -> Result<(), T> {
-        if self.length >= self.capacity {
-            return Err(value);
-        }
-
-        // SAFETY: we know this is safe because we've already checked that
-        //         self.length is less than self.capacity.
-        unsafe {
-            push_within_capacity(&mut self.data, &mut self.length, value)
-        };
-        Ok(())
+        push_within_capacity(
+            &mut self.data,
+            &mut self.length,
+            &mut self.capacity,
+            value,
+        )
     }
 
     /// Inserts an element at the given `index` in the [RawArray], shifting
@@ -872,6 +893,7 @@ impl<T> RawArray<T> {
     /// If the given `index` is out of bounds, returns [`Option::None`].
     pub const fn remove(&mut self, index: usize) -> Option<T> {
         if index == self.length - 1 {
+            // SAFETY: we already checked that there is something to pop.
             return Some(unsafe { pop(&mut self.data, &mut self.length) });
         }
 
@@ -933,580 +955,5 @@ impl<T> RawArray<T> {
     /// elements are dropped.
     pub fn truncate(&mut self, len: usize) {
         truncate(&mut self.data, &mut self.length, len)
-    }
-}
-
-/// Controls the state of one or more `*mut T` pointers to enable use of the
-/// Struct-of-Arrays pattern.
-///
-/// Since it's hard to safely write data structures making use of this pattern
-/// without derive (and even then its clunky), [MultiArray] is provided to
-/// make it easy for you to put one together yourself without much friction,
-/// although we don't guarantee total safety.
-///
-/// So you'll simply call the array methods on [MultiArray], providing the type
-/// as a struct. For example, a [MultiArray] managing 3 arrays with `i32`,
-/// `String`, `SomeType` in them:
-///
-/// ```no_run
-/// struct SomeDataStructure {
-///     ints: NonNull<i32>,
-///     strings: NonNull<String>,
-///     sometypes: NonNull<SomeType>,
-///     arr: MultiArray<3, (i32, String, SomeType)>
-/// }
-///
-/// impl SomeDataStructure {
-///     fn new() -> SomeDataStructure {
-///         SomeDataStructure {        
-///             ...,
-///             arr: MultiArray::new((&mut ints, &mut strings, &mut sometypes)),
-///         }
-///     }
-/// }
-///
-/// // in your code later...
-/// fn some_function() {
-///     (&mut ints, &mut strings, &mut sometypes) = arr.push(
-///         (0i32, String::new(), SomeType::SomeValue)).unwrap();
-/// }
-/// ```
-///
-/// This is unsafe because I've been dissatisfied with the availible safe
-/// solutions. Unfortunately Rust has no compile time reflection so unsafe is
-/// as good as it's gonna get.
-pub struct MultiArray<const N: usize, T: MultiArrayTypes<N>> {
-    length: usize,
-    capacity: usize,
-    _marker: PhantomData<T>,
-}
-
-impl<const N: usize, T: MultiArrayTypes<N>> MultiArray<N, T> {
-    /// # Safety
-    ///
-    /// This function is safe to use if the following is true:
-    /// - If capacity is some x >= 0, data points to enough memory to contain x
-    ///   elements of type T.
-    /// - If length is some y >= 0, y <= x.
-    /// - If length is 0, so is capacity.
-    /// - If capacity is 0, data's value is irrelevant.
-    #[inline]
-    pub const unsafe fn from_raw_parts(
-        capacity: usize,
-        length: usize,
-    ) -> MultiArray<N, T> {
-        MultiArray {
-            length,
-            capacity,
-            _marker: PhantomData,
-        }
-    }
-
-    /// Returns a new empty [MultiArray]
-    #[inline]
-    pub const fn new() -> MultiArray<N, T> {
-        MultiArray {
-            length: 0,
-            capacity: 0,
-            _marker: PhantomData,
-        }
-    }
-
-    /// Returns a new [MultiArray] with the given capacity, as well as an array
-    /// containing the raw pointers to the allocated memory for each type.
-    #[inline]
-    pub fn with_capacity(
-        capacity: usize,
-        alloc: impl Allocator,
-    ) -> Result<(MultiArray<N, T>, [*mut (); N]), alloc::AllocError> {
-        let mut offsets = [0usize; N];
-
-        let layout = {
-            let mut result = Layout::new::<()>();
-            for (i, (size, align)) in
-                T::sizes_and_alignments().iter().enumerate()
-            {
-                offsets[i] = result.size();
-                // SAFETY: we know this is safe because sizes_and_alignments
-                //         just calls mem::size_of and mem::align_of for each
-                //         type.
-                let (layout, _) = match unsafe {
-                    Layout::from_size_align_unchecked(*size, *align)
-                }
-                .repeat(capacity)
-                {
-                    Ok((l, s)) => (l, s),
-                    Err(_) => return Err(alloc::AllocError),
-                };
-
-                let size = match result.size().checked_add(layout.size()) {
-                    Some(x) => x,
-                    None => return Err(alloc::AllocError),
-                };
-                result = unsafe {
-                    Layout::from_size_align_unchecked(
-                        size,
-                        cmp::max(result.align(), *align),
-                    )
-                };
-            }
-
-            result
-        };
-
-        // TODO: allocate the memory, return the MultiArray structure, and then
-        //       return each offsetted pointer.
-        let data = alloc.allocate(layout)?;
-
-        let ptrs = {
-            let mut result = [ptr::null_mut::<()>(); N];
-
-            for i in 0..N {
-                // SAFETY: We know this is safe because we computed each offset
-                //         from valid Layouts.
-                result[i] =
-                    unsafe { data.byte_add(offsets[i]).as_ptr().cast() };
-            }
-
-            result
-        };
-
-        Ok((
-            MultiArray {
-                length: 0,
-                capacity,
-                _marker: PhantomData,
-            },
-            ptrs,
-        ))
-    }
-
-    /// Returns the length of the [MultiArray].
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.length
-    }
-
-    /// Returns the total number of elements each array can hold without
-    /// reallocating.
-    #[inline]
-    pub const fn capacity(&self) -> usize {
-        self.capacity
-    }
-
-    /// Tries to reserve enough memory for at least `additional` extra elements
-    /// to be appended to the end of the [MultiArray]. That is, after calling
-    /// this you can be sure that the next `additional` calls to
-    /// [MultiArray::push] will not allocate and complete in `O(1)` time.
-    ///
-    /// Returns an error if:
-    ///
-    /// - `mem::size_of::<T>() * self.capacity + additional` would overflow.
-    ///
-    /// - `mem::size_of::<T>() * self.capacity + additional > isize::MAX`.
-    ///
-    /// - An allocation failed.
-    ///
-    /// # Safety
-    ///
-    /// This method is safe to use as long as you use the same allocator for
-    /// all methods on this object.
-    pub unsafe fn reserve(
-        &mut self,
-        additional: usize,
-        alloc: impl Allocator,
-    ) -> Result<(), alloc::AllocError> {
-        reserve(
-            &mut self.data,
-            &mut self.length,
-            &mut self.capacity,
-            additional,
-            &alloc,
-        )
-    }
-
-    /// Appends an element to the back of the [MultiArray].
-    ///
-    /// Returns an error if:
-    ///
-    /// - `mem::size_of::<T>() * self.capacity` would overflow.
-    ///
-    /// - `mem::size_of::<T>() * self.capacity > isize::MAX`.
-    ///
-    /// - `mem::size_of::<T>() * self.capacity + 1` would overflow.
-    ///
-    /// - An allocation failed.
-    ///
-    /// # Safety
-    ///
-    /// This method is safe to use as long as you use the same allocator for
-    /// all methods on this object.
-    pub unsafe fn push(
-        &mut self,
-        value: T,
-        alloc: impl Allocator,
-    ) -> Result<(), alloc::AllocError> {
-        push(
-            &mut self.data,
-            &mut self.length,
-            &mut self.capacity,
-            value,
-            &alloc,
-        )
-    }
-
-    /// Removes the last element from a vector and returns it, or [`None`] if
-    /// it is empty.
-    pub const fn pop(&mut self) -> Option<T> {
-        if self.length == 0 {
-            return None;
-        }
-
-        // SAFETY: we already checked that there is actually something to pop.
-        Some(unsafe { pop(&mut self.data, &mut self.length) })
-    }
-
-    /// Clears and drops all the elements in the [MultiArray] without freeing any
-    /// memory.
-    pub fn clear(&mut self) {
-        clear(&mut self.data, &mut self.length)
-    }
-
-    /// Moves all elements out of `other` into `self`, leaving `other` empty.
-    ///
-    /// Returns an error if:
-    ///
-    /// - An allocation failure occurs.
-    ///
-    /// # Safety
-    ///
-    /// This method is safe to use as long as you use the same allocator for
-    /// all methods on this object.
-    pub unsafe fn append(
-        &mut self,
-        other: &mut MultiArray<T>,
-        alloc: impl Allocator,
-    ) -> Result<(), alloc::AllocError> {
-        append(
-            &mut self.data,
-            &mut self.length,
-            &mut self.capacity,
-            &alloc,
-            other.data,
-            other.length,
-        )
-    }
-
-    /// Appends an element to the end of the [MultiArray] only if there is enough
-    /// capacity to do so, otherwise the element is returned.
-    ///
-    /// Guaranteed to never allocate memory.
-    pub const fn push_within_capacity(&mut self, value: T) -> Result<(), T> {
-        if self.length >= self.capacity {
-            return Err(value);
-        }
-
-        // SAFETY: we know this is safe because we've already checked that
-        //         self.length is less than self.capacity.
-        unsafe {
-            push_within_capacity(&mut self.data, &mut self.length, value)
-        };
-        Ok(())
-    }
-
-    /// Inserts an element at the given `index` in the [MultiArray], shifting
-    /// everything after it to the right.
-    ///
-    /// # Safety
-    ///
-    /// This method is safe to use as long as you use the same allocator for
-    /// all methods on this object.
-    pub unsafe fn insert(
-        &mut self,
-        index: usize,
-        value: T,
-        alloc: impl Allocator,
-    ) -> Result<Option<()>, alloc::AllocError> {
-        if index > self.length {
-            return Ok(None);
-        }
-
-        insert_unchecked(
-            &mut self.data,
-            &mut self.length,
-            &mut self.capacity,
-            &alloc,
-            index,
-            value,
-        )?;
-        Ok(Some(()))
-    }
-
-    /// Inserts an element at the given `index` in the [MultiArray], shifting
-    /// everything after it to the right.
-    ///
-    /// # Safety
-    ///
-    /// This function is safe to use if the following is true:
-    /// - `index` is within the bounds of the [MultiArray].
-    /// - The same allocator is used for all methods on this object.
-    pub unsafe fn insert_unchecked(
-        &mut self,
-        index: usize,
-        value: T,
-        alloc: impl Allocator,
-    ) -> Result<(), alloc::AllocError> {
-        insert_unchecked(
-            &mut self.data,
-            &mut self.length,
-            &mut self.capacity,
-            &alloc,
-            index,
-            value,
-        )
-    }
-
-    /// Removes and returns the element at the given `index`, shifting
-    /// everything after it to the left.
-    ///
-    /// If the given `index` is out of bounds, returns [`Option::None`].
-    pub const fn remove(&mut self, index: usize) -> Option<T> {
-        if index == self.length - 1 {
-            return Some(unsafe { pop(&mut self.data, &mut self.length) });
-        }
-
-        if index >= self.length {
-            return None;
-        }
-
-        // SAFETY: this is safe because we already checked that the index is in
-        //         bounds.
-        Some(unsafe {
-            remove_unchecked(&mut self.data, &mut self.length, index)
-        })
-    }
-
-    /// Removes and returns the element at the given `index`, shifting
-    /// everything after it to the left.
-    ///
-    /// # Safety
-    ///
-    /// This function is safe to use if the `index` is in bounds.
-    pub const unsafe fn remove_unchecked(&mut self, index: usize) -> T {
-        remove_unchecked(&mut self.data, &mut self.length, index)
-    }
-
-    /// Removes and returns the element at the given `index`, swapping it with
-    /// the last element in the array.
-    ///
-    /// If the given `index` is out of bounds, returns [`Option::None`].
-    pub const fn swap_remove(&mut self, index: usize) -> Option<T> {
-        if index == self.length - 1 {
-            return self.pop();
-        }
-
-        if index >= self.length {
-            return None;
-        }
-
-        // SAFETY: we know this is safe because we've checked that the index is
-        //         in bounds.
-        Some(unsafe {
-            swap_remove_unchecked(&mut self.data, &mut self.length, index)
-        })
-    }
-
-    /// Removes and returns the element at the given `index`, swapping it with
-    /// the last element in the array.
-    ///
-    /// If the given `index` is out of bounds, returns [`Option::None`].
-    ///
-    /// # Safety
-    ///
-    /// This function is safe to use if the `index` is in bounds.
-    pub const unsafe fn swap_remove_unchecked(&mut self, index: usize) -> T {
-        swap_remove_unchecked(&mut self.data, &mut self.length, index)
-    }
-
-    /// Truncates the [MultiArray] to be less than or equal to the given `len`.
-    /// If the [MultiArray]'s length is greater than the given `len`, the extra
-    /// elements are dropped.
-    pub fn truncate(&mut self, len: usize) {
-        truncate(&mut self.data, &mut self.length, len)
-    }
-}
-
-/// Any tuple of length x such that 2 <= x <= 12 implements this.
-pub trait MultiArrayTypes<const N: usize> {
-    fn sizes_and_alignments() -> [(usize, usize); N];
-}
-
-// The following is a failure in language design. This could be mitigated if we
-// had compile-time reflection. Then all this could be replaced with some
-// generic-length tuple type and a `for (typeinfo, name) in tuple` loop.
-
-impl<T1, T2> MultiArrayTypes<2> for (T1, T2) {
-    fn sizes_and_alignments() -> [(usize, usize); 2] {
-        [
-            (mem::size_of::<T1>(), mem::align_of::<T1>()),
-            (mem::size_of::<T2>(), mem::align_of::<T2>()),
-        ]
-    }
-}
-
-impl<T1, T2, T3> MultiArrayTypes<3> for (T1, T2, T3) {
-    fn sizes_and_alignments() -> [(usize, usize); 3] {
-        [
-            (mem::size_of::<T1>(), mem::align_of::<T1>()),
-            (mem::size_of::<T2>(), mem::align_of::<T2>()),
-            (mem::size_of::<T3>(), mem::align_of::<T3>()),
-        ]
-    }
-}
-
-impl<T1, T2, T3, T4> MultiArrayTypes<4> for (T1, T2, T3, T4) {
-    fn sizes_and_alignments() -> [(usize, usize); 4] {
-        [
-            (mem::size_of::<T1>(), mem::align_of::<T1>()),
-            (mem::size_of::<T2>(), mem::align_of::<T2>()),
-            (mem::size_of::<T3>(), mem::align_of::<T3>()),
-            (mem::size_of::<T4>(), mem::align_of::<T4>()),
-        ]
-    }
-}
-
-impl<T1, T2, T3, T4, T5> MultiArrayTypes<5> for (T1, T2, T3, T4, T5) {
-    fn sizes_and_alignments() -> [(usize, usize); 5] {
-        [
-            (mem::size_of::<T1>(), mem::align_of::<T1>()),
-            (mem::size_of::<T2>(), mem::align_of::<T2>()),
-            (mem::size_of::<T3>(), mem::align_of::<T3>()),
-            (mem::size_of::<T4>(), mem::align_of::<T4>()),
-            (mem::size_of::<T5>(), mem::align_of::<T5>()),
-        ]
-    }
-}
-
-impl<T1, T2, T3, T4, T5, T6> MultiArrayTypes<6> for (T1, T2, T3, T4, T5, T6) {
-    fn sizes_and_alignments() -> [(usize, usize); 6] {
-        [
-            (mem::size_of::<T1>(), mem::align_of::<T1>()),
-            (mem::size_of::<T2>(), mem::align_of::<T2>()),
-            (mem::size_of::<T3>(), mem::align_of::<T3>()),
-            (mem::size_of::<T4>(), mem::align_of::<T4>()),
-            (mem::size_of::<T5>(), mem::align_of::<T5>()),
-            (mem::size_of::<T6>(), mem::align_of::<T6>()),
-        ]
-    }
-}
-
-impl<T1, T2, T3, T4, T5, T6, T7> MultiArrayTypes<7>
-    for (T1, T2, T3, T4, T5, T6, T7)
-{
-    fn sizes_and_alignments() -> [(usize, usize); 7] {
-        [
-            (mem::size_of::<T1>(), mem::align_of::<T1>()),
-            (mem::size_of::<T2>(), mem::align_of::<T2>()),
-            (mem::size_of::<T3>(), mem::align_of::<T3>()),
-            (mem::size_of::<T4>(), mem::align_of::<T4>()),
-            (mem::size_of::<T5>(), mem::align_of::<T5>()),
-            (mem::size_of::<T6>(), mem::align_of::<T6>()),
-            (mem::size_of::<T7>(), mem::align_of::<T7>()),
-        ]
-    }
-}
-
-impl<T1, T2, T3, T4, T5, T6, T7, T8> MultiArrayTypes<8>
-    for (T1, T2, T3, T4, T5, T6, T7, T8)
-{
-    fn sizes_and_alignments() -> [(usize, usize); 8] {
-        [
-            (mem::size_of::<T1>(), mem::align_of::<T1>()),
-            (mem::size_of::<T2>(), mem::align_of::<T2>()),
-            (mem::size_of::<T3>(), mem::align_of::<T3>()),
-            (mem::size_of::<T4>(), mem::align_of::<T4>()),
-            (mem::size_of::<T5>(), mem::align_of::<T5>()),
-            (mem::size_of::<T6>(), mem::align_of::<T6>()),
-            (mem::size_of::<T7>(), mem::align_of::<T7>()),
-            (mem::size_of::<T8>(), mem::align_of::<T8>()),
-        ]
-    }
-}
-
-impl<T1, T2, T3, T4, T5, T6, T7, T8, T9> MultiArrayTypes<9>
-    for (T1, T2, T3, T4, T5, T6, T7, T8, T9)
-{
-    fn sizes_and_alignments() -> [(usize, usize); 9] {
-        [
-            (mem::size_of::<T1>(), mem::align_of::<T1>()),
-            (mem::size_of::<T2>(), mem::align_of::<T2>()),
-            (mem::size_of::<T3>(), mem::align_of::<T3>()),
-            (mem::size_of::<T4>(), mem::align_of::<T4>()),
-            (mem::size_of::<T5>(), mem::align_of::<T5>()),
-            (mem::size_of::<T6>(), mem::align_of::<T6>()),
-            (mem::size_of::<T7>(), mem::align_of::<T7>()),
-            (mem::size_of::<T8>(), mem::align_of::<T8>()),
-            (mem::size_of::<T9>(), mem::align_of::<T9>()),
-        ]
-    }
-}
-
-impl<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10> MultiArrayTypes<10>
-    for (T1, T2, T3, T4, T5, T6, T7, T8, T9, T10)
-{
-    fn sizes_and_alignments() -> [(usize, usize); 10] {
-        [
-            (mem::size_of::<T1>(), mem::align_of::<T1>()),
-            (mem::size_of::<T2>(), mem::align_of::<T2>()),
-            (mem::size_of::<T3>(), mem::align_of::<T3>()),
-            (mem::size_of::<T4>(), mem::align_of::<T4>()),
-            (mem::size_of::<T5>(), mem::align_of::<T5>()),
-            (mem::size_of::<T6>(), mem::align_of::<T6>()),
-            (mem::size_of::<T7>(), mem::align_of::<T7>()),
-            (mem::size_of::<T8>(), mem::align_of::<T8>()),
-            (mem::size_of::<T9>(), mem::align_of::<T9>()),
-            (mem::size_of::<T10>(), mem::align_of::<T10>()),
-        ]
-    }
-}
-
-impl<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11> MultiArrayTypes<11>
-    for (T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11)
-{
-    fn sizes_and_alignments() -> [(usize, usize); 11] {
-        [
-            (mem::size_of::<T1>(), mem::align_of::<T1>()),
-            (mem::size_of::<T2>(), mem::align_of::<T2>()),
-            (mem::size_of::<T3>(), mem::align_of::<T3>()),
-            (mem::size_of::<T4>(), mem::align_of::<T4>()),
-            (mem::size_of::<T5>(), mem::align_of::<T5>()),
-            (mem::size_of::<T6>(), mem::align_of::<T6>()),
-            (mem::size_of::<T7>(), mem::align_of::<T7>()),
-            (mem::size_of::<T8>(), mem::align_of::<T8>()),
-            (mem::size_of::<T9>(), mem::align_of::<T9>()),
-            (mem::size_of::<T10>(), mem::align_of::<T10>()),
-            (mem::size_of::<T11>(), mem::align_of::<T11>()),
-        ]
-    }
-}
-
-impl<T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12> MultiArrayTypes<12>
-    for (T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12)
-{
-    fn sizes_and_alignments() -> [(usize, usize); 12] {
-        [
-            (mem::size_of::<T1>(), mem::align_of::<T1>()),
-            (mem::size_of::<T2>(), mem::align_of::<T2>()),
-            (mem::size_of::<T3>(), mem::align_of::<T3>()),
-            (mem::size_of::<T4>(), mem::align_of::<T4>()),
-            (mem::size_of::<T5>(), mem::align_of::<T5>()),
-            (mem::size_of::<T6>(), mem::align_of::<T6>()),
-            (mem::size_of::<T7>(), mem::align_of::<T7>()),
-            (mem::size_of::<T8>(), mem::align_of::<T8>()),
-            (mem::size_of::<T9>(), mem::align_of::<T9>()),
-            (mem::size_of::<T10>(), mem::align_of::<T10>()),
-            (mem::size_of::<T11>(), mem::align_of::<T11>()),
-            (mem::size_of::<T12>(), mem::align_of::<T12>()),
-        ]
     }
 }
