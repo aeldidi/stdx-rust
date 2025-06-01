@@ -6,9 +6,13 @@ version = 3
 name = "stdx"
 version = "0.1.0"
 dependencies = [
- "stdx_rust",
+ "stdx_core",
  "stdx_soa",
 ]
+
+[[package]]
+name = "stdx_core"
+version = "0.1.0"
 
 [[package]]
 name = "stdx_rust"

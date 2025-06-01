@@ -25,7 +25,7 @@ const INTERNAL_MALLOC: Mallocator = Mallocator { _marker: () };
 
 /// The [Allocator] representing the system C allocator.
 #[allow(non_upper_case_globals)]
-pub const Malloc: &'static Mallocator = &INTERNAL_MALLOC;
+pub const Malloc: &Mallocator = &INTERNAL_MALLOC;
 
 unsafe impl Send for Mallocator {}
 unsafe impl Sync for Mallocator {}

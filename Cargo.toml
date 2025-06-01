@@ -8,5 +8,5 @@ publish = false
 [features]
 
 [dependencies]
-stdx_rust = {path = "./rust"}
+stdx_core = { path = "./core" }
 stdx_soa = { path = "./soa" }

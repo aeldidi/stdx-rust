@@ -1,10 +1,11 @@
 //! Facilities for working with Rust source code, particularly for use in
 //! procedural macros.
-//!
-//! This needs to be in its own crate because we use it from proc_macros in
-//! stdx, so stdx itself can't depend on it.
 
-use core::iter::Peekable;
+use crate::array::Array;
+use core::{
+    alloc::{self, Allocator},
+    iter::Peekable,
+};
 
 pub mod compat {
     /// The analogue for `proc_macro::TokenTree`.
@@ -69,7 +70,10 @@ pub enum Type {
     SimpleType(String),
 }
 
-pub struct ParseError;
+pub enum Error {
+    ParseError,
+    AllocError,
+}
 
 /// ```
 /// Syntax
@@ -97,9 +101,11 @@ pub struct ParseError;
 pub fn parse_type<
     Span: Clone,
     Stream: Iterator<Item = compat::TokenTree<Span, Stream>> + Clone,
+    A: Allocator,
 >(
     mut input: Peekable<Stream>,
-) -> Result<Type, ParseError> {
+    alloc: A,
+) -> Result<Type, Error> {
     use compat::*;
 
     let next = match input.next() {
@@ -148,9 +154,11 @@ pub enum SimplePathSegment {
 pub fn parse_simple_path_segment<
     Span: Clone,
     Stream: Iterator<Item = compat::TokenTree<Span, Stream>> + Clone,
+    A: Allocator,
 >(
     mut input: Peekable<Stream>,
-) -> Result<SimplePathSegment, ParseError> {
+    alloc: A,
+) -> Result<SimplePathSegment, Error> {
     use compat::*;
     let next = match input.peek() {
         Some(x) => x.clone(),
@@ -192,7 +200,7 @@ pub fn parse_simple_path_segment<
 }
 
 pub struct SimplePath {
-    // pub elements:
+    pub elements: Array<SimplePathSegment>,
 }
 
 /// ```
@@ -202,8 +210,36 @@ pub struct SimplePath {
 pub fn parse_simple_path<
     Span: Clone,
     Stream: Iterator<Item = compat::TokenTree<Span, Stream>> + Clone,
+    A: Allocator,
 >(
     mut input: Peekable<Stream>,
-) -> Result<Type, ParseError> {
-    return Err(ParseError);
+    alloc: A,
+) -> Result<Type, Error> {
+    use compat::*;
+
+    let mut result = Array::new(&alloc);
+    loop {
+        match input.next() {
+            Some(TokenTree::Punct(':')) => {
+                if let Some(TokenTree::Punct(':')) = input.peek() {
+                    input.next().unwrap();
+                    continue;
+                }
+
+                return Err(ParseError);
+            }
+            Some(_) => match parse_simple_path_segment(input, alloc) {
+                Ok(sps) => result.push(sps).map_err(|| Error::AllocError)?,
+                Err(Error::AllocError) => return Err(Error::AllocError),
+                Err(_) => break,
+            },
+            None => return Err(ParseError),
+        }
+    }
+
+    if result.len() == 0 {
+        return Err(ParseError);
+    }
+
+    return Ok(SimplePath { elements: result });
 }
