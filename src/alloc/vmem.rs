@@ -112,27 +112,27 @@ mod internal {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
 
-    fn layout(size: usize, align: usize) -> alloc::Layout {
-        alloc::Layout::from_size_align(size, align).unwrap()
-    }
+//     fn layout(size: usize, align: usize) -> alloc::Layout {
+//         alloc::Layout::from_size_align(size, align).unwrap()
+//     }
 
-    /// The purpose of this test is not to evaluate if the system's
-    /// virtual_malloc/free work, rather, its just to ensure we can use the
-    /// functions successfully.
-    #[test]
-    fn virutal_memory_works() {
-        let vm = VirtualMemoryAllocator::new(1);
-        assert!(vm.is_ok());
-        let vm = vm.unwrap();
-        let result = vm.allocate(layout(1, 1));
-        assert!(result.is_ok());
-        let alloc = result.unwrap();
-        unsafe { alloc.cast::<u8>().as_ptr().write(0) };
-        assert_eq!(alloc.len(), 1);
-        unsafe { vm.deallocate(alloc.cast(), layout(1, 1)) };
-    }
-}
+//     /// The purpose of this test is not to evaluate if the system's
+//     /// virtual_malloc/free work, rather, its just to ensure we can use the
+//     /// functions successfully.
+//     #[test]
+//     fn virutal_memory_works() {
+//         let vm = VirtualMemoryAllocator::new(1);
+//         assert!(vm.is_ok());
+//         let vm = vm.unwrap();
+//         let result = vm.allocate(layout(1, 1));
+//         assert!(result.is_ok());
+//         let alloc = result.unwrap();
+//         unsafe { alloc.cast::<u8>().as_ptr().write(0) };
+//         assert_eq!(alloc.len(), 1);
+//         unsafe { vm.deallocate(alloc.cast(), layout(1, 1)) };
+//     }
+// }

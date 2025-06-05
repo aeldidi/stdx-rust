@@ -1,209 +1,439 @@
-//! Facilities for working with Rust source code, particularly for use in
-//! procedural macros.
-//!
-//! This needs to be in its own crate because we use it from proc_macros in
-//! stdx, so stdx itself can't depend on it.
+//! A minimal rust parser suitable for writing basic proc macros. Currently
+//! only supports parsing type declarations and function declarations.
 
-use core::iter::Peekable;
+mod compat;
 
-pub mod compat {
-    /// The analogue for `proc_macro::TokenTree`.
-    #[derive(Clone, PartialEq, Eq, Debug)]
-    pub enum TokenTree<Span: Clone, Stream: Iterator<Item = Self> + Clone> {
-        Group(Group<Span, Stream>),
-        Ident(Ident<Span>),
-        Punct(Punct<Span>),
-        Literal(Span),
-    }
+use compat::{Delimiter, TokenStream, TokenTree};
 
-    /// The analogue for `proc_macro::Ident`.
-    #[derive(Clone, PartialEq, Eq, Debug)]
-    pub struct Ident<Span: Clone> {
-        pub ident: String,
-        pub span: Span,
-    }
-
-    /// The analogue for `proc_macro::Group`.
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    pub struct Group<
-        Span: Clone,
-        Stream: Iterator<Item = TokenTree<Span, Stream>> + Clone,
-    > {
-        pub stream: Stream,
-        pub delimiter: Delimiter,
-        pub span: Span,
-    }
-
-    /// The analogue for `proc_macro::Delimiter`.
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    pub enum Delimiter {
-        Parenthesis,
-        Brace,
-        Bracket,
-        None,
-    }
-
-    /// The analogue for `proc_macro::Spacing`.
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    pub enum Spacing {
-        Joint,
-        Alone,
-    }
-
-    /// The analogue for `proc_macro::Punct`.
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    pub struct Punct<Span: Clone> {
-        pub ch: char,
-        pub spacing: Spacing,
-        pub span: Span,
-    }
+#[derive(Debug, Clone, PartialEq)]
+pub enum TypeDecl {
+    Struct {
+        name: String,
+        fields: Vec<Field>,
+    },
+    Enum {
+        name: String,
+        variants: Vec<EnumVariant>,
+    },
+    TypeAlias {
+        name: String,
+    },
+    Function {
+        sig: FunctionSig,
+    },
 }
 
-/// Represents a Rust type. Currently doesn't support any operations on it.
-pub enum Type {
-    /// `!` type.
-    NeverType,
-    /// Either a generic type, a type with bounds, or a macro.
-    ComplexType,
-    /// A type specified by an identifier (like `bool`, `i32`, `str`, `Mutex`).
-    SimpleType(String),
+#[derive(Debug, Clone, PartialEq)]
+pub struct Field {
+    pub name: String,
+    pub ty: String,
 }
 
-pub struct ParseError;
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumVariant {
+    pub name: String,
+    pub fields: Vec<Field>,
+}
 
-/// ```
-/// Syntax
-/// Type :
-///       TypeNoBounds
-///    | ImplTraitType
-///    | TraitObjectType
-///
-/// TypeNoBounds :
-///       ParenthesizedType
-///    | ImplTraitTypeOneBound
-///    | TraitObjectTypeOneBound
-///    | TypePath
-///    | TupleType
-///    | NeverType
-///    | RawPointerType
-///    | ReferenceType
-///    | ArrayType
-///    | SliceType
-///    | InferredType
-///    | QualifiedPathInType
-///    | BareFunctionType
-///    | MacroInvocation
-/// ```
-pub fn parse_type<
-    Span: Clone,
-    Stream: Iterator<Item = compat::TokenTree<Span, Stream>> + Clone,
->(
-    mut input: Peekable<Stream>,
-) -> Result<Type, ParseError> {
-    use compat::*;
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionSig {
+    pub vis: Option<String>,
+    pub is_async: bool,
+    pub is_const: bool,
+    pub name: String,
+    pub args: Vec<Field>,
+    pub ret: Option<String>,
+}
 
-    let next = match input.next() {
-        Some(x) => x,
-        None => return Err(ParseError),
-    };
+/// Parse top-level type declarations from a TokenStream.
+/// Returns an error string if parsing fails.
+pub fn parse_type_decls(tokens: TokenStream) -> Result<Vec<TypeDecl>, String> {
+    let mut decls = Vec::new();
+    let mut iter = tokens.into_iter().peekable();
 
-    match next {
-        TokenTree::Group(Group {
-            stream: _,
-            delimiter: _,
-            span: _,
-        }) => {
-            todo!()
-        }
-        TokenTree::Ident(Ident { ident, span: _ }) => {
-            return Ok(Type::SimpleType(ident));
-        }
-        TokenTree::Punct(Punct {
-            ch,
-            spacing: _,
-            span: _,
-        }) => {
-            if ch == '!' {
-                return Ok(Type::NeverType);
+    while let Some(token) = iter.next() {
+        match &token {
+            TokenTree::Ident(ident) if ident.to_string() == "struct" => {
+                // Parse struct name
+                let name = if let Some(TokenTree::Ident(name)) = iter.next() {
+                    name.to_string()
+                } else {
+                    return Err(
+                        "Expected struct name after 'struct'".to_string()
+                    );
+                };
+                // Parse struct fields
+                let mut fields = Vec::new();
+                let mut found_brace = false;
+                while let Some(token) = iter.next() {
+                    if let TokenTree::Group(group) = &token {
+                        if group.delimiter() == Delimiter::Brace {
+                            fields = parse_struct_fields(group.stream())?;
+                            found_brace = true;
+                            break;
+                        }
+                    }
+                }
+                if !found_brace {
+                    return Err(format!(
+                        "Expected '{{' with fields for struct '{}'",
+                        name
+                    ));
+                }
+                decls.push(TypeDecl::Struct { name, fields });
+            }
+            TokenTree::Ident(ident) if ident.to_string() == "enum" => {
+                // Parse enum name
+                let name = if let Some(TokenTree::Ident(name)) = iter.next() {
+                    name.to_string()
+                } else {
+                    return Err("Expected enum name after 'enum'".to_string());
+                };
+                // Parse enum variants
+                let mut variants = Vec::new();
+                let mut found_brace = false;
+                while let Some(token) = iter.next() {
+                    if let TokenTree::Group(group) = &token {
+                        if group.delimiter() == Delimiter::Brace {
+                            variants = parse_enum_variants(group.stream())?;
+                            found_brace = true;
+                            break;
+                        }
+                    }
+                }
+                if !found_brace {
+                    return Err(format!(
+                        "Expected '{{' with variants for enum '{}'",
+                        name
+                    ));
+                }
+                decls.push(TypeDecl::Enum { name, variants });
+            }
+            TokenTree::Ident(ident) if ident.to_string() == "type" => {
+                if let Some(TokenTree::Ident(name)) = iter.next() {
+                    decls.push(TypeDecl::TypeAlias {
+                        name: name.to_string(),
+                    });
+                } else {
+                    return Err(
+                        "Expected type alias name after 'type'".to_string()
+                    );
+                }
+            }
+            TokenTree::Ident(ident)
+                if ident.to_string() == "fn"
+                    || (ident.to_string() == "pub")
+                    || (ident.to_string() == "async")
+                    || (ident.to_string() == "const") =>
+            {
+                // Parse function signature
+                let sig = parse_function_sig(&token, &mut iter)?;
+                decls.push(TypeDecl::Function { sig });
+            }
+            _ => {
+                // Skip other tokens for now
             }
         }
-        TokenTree::Literal(_) => todo!(),
     }
-
-    Err(ParseError)
+    Ok(decls)
 }
 
-pub enum SimplePathSegment {
-    Ident(String),
-    Super,
-    SelfKW,
-    Crate,
-    DollarCrate,
-}
-
-/// ```
-///   SimplePathSegment :
-///      IDENTIFIER | super | self | crate | $crate
-/// ```
-pub fn parse_simple_path_segment<
-    Span: Clone,
-    Stream: Iterator<Item = compat::TokenTree<Span, Stream>> + Clone,
->(
-    mut input: Peekable<Stream>,
-) -> Result<SimplePathSegment, ParseError> {
-    use compat::*;
-    let next = match input.peek() {
-        Some(x) => x.clone(),
-        None => return Err(ParseError),
-    };
-
-    match next {
-        TokenTree::Ident(Ident { ident, .. }) => {
-            _ = input.next().unwrap();
-            return match ident.as_str() {
-                "super" => Ok(SimplePathSegment::Super),
-                "self" => Ok(SimplePathSegment::SelfKW),
-                "crate" => Ok(SimplePathSegment::Crate),
-                ident => Ok(SimplePathSegment::Ident(ident.to_string())),
-            };
+fn parse_struct_fields(tokens: TokenStream) -> Result<Vec<Field>, String> {
+    let mut fields = Vec::new();
+    let mut iter = tokens.into_iter().peekable();
+    while let Some(token) = iter.next() {
+        if let TokenTree::Ident(name) = &token {
+            // Expect :
+            if let Some(TokenTree::Punct(p)) = iter.next() {
+                if p == ':' {
+                    // Collect type tokens until , or end
+                    let mut ty = String::new();
+                    while let Some(t) = iter.peek() {
+                        match t {
+                            TokenTree::Punct(p) if *p == ',' => {
+                                iter.next();
+                                break;
+                            }
+                            _ => {
+                                ty.push_str(&token_to_string(
+                                    iter.next().unwrap(),
+                                ));
+                            }
+                        }
+                    }
+                    fields.push(Field {
+                        name: name.to_string(),
+                        ty: ty.trim().to_string(),
+                    });
+                } else {
+                    return Err(format!(
+                        "Expected ':' after field name '{}'",
+                        name
+                    ));
+                }
+            } else {
+                return Err(format!(
+                    "Expected ':' after field name '{}'",
+                    name
+                ));
+            }
         }
-        TokenTree::Punct(Punct {
-            ch: ':',
-            spacing: Spacing::Joint,
-            ..
-        }) => {
-            // is it a $crate?
-            _ = input.next().unwrap();
+    }
+    Ok(fields)
+}
 
-            let next = match input.next() {
-                Some(x) => x,
-                None => return Err(ParseError),
-            };
-            if let TokenTree::Ident(Ident { ident, .. }) = next {
-                if ident == "crate" {
-                    return Ok(SimplePathSegment::DollarCrate);
+fn parse_enum_variants(
+    tokens: TokenStream,
+) -> Result<Vec<EnumVariant>, String> {
+    let mut variants = Vec::new();
+    let mut iter = tokens.into_iter().peekable();
+    while let Some(token) = iter.next() {
+        if let TokenTree::Ident(name) = &token {
+            // Check for tuple or struct variant
+            if let Some(TokenTree::Group(group)) = iter.peek() {
+                match group.delimiter() {
+                    Delimiter::Parenthesis | Delimiter::Brace => {
+                        let group =
+                            if let Some(TokenTree::Group(g)) = iter.next() {
+                                g
+                            } else {
+                                continue;
+                            };
+                        let fields = parse_struct_fields(group.stream())?;
+                        variants.push(EnumVariant {
+                            name: name.to_string(),
+                            fields,
+                        });
+                        // Skip trailing comma if present
+                        if let Some(TokenTree::Punct(p)) = iter.peek() {
+                            if *p == ',' {
+                                iter.next();
+                            }
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+            // Unit variant
+            variants.push(EnumVariant {
+                name: name.to_string(),
+                fields: Vec::new(),
+            });
+            // Skip trailing comma if present
+            if let Some(TokenTree::Punct(p)) = iter.peek() {
+                if *p == ',' {
+                    iter.next();
                 }
             }
         }
-        _ => (),
+    }
+    Ok(variants)
+}
+
+fn parse_function_sig(
+    first_token: &TokenTree,
+    iter: &mut std::iter::Peekable<impl Iterator<Item = TokenTree>>,
+) -> Result<FunctionSig, String> {
+    let mut vis = None;
+    let mut is_async = false;
+    let mut is_const = false;
+    let mut name = None;
+
+    // Handle pub/async/const/fn ordering
+    let mut tokens = vec![first_token.clone()];
+    for _ in 0..3 {
+        if let Some(TokenTree::Ident(ident)) = iter.peek() {
+            let s = ident.to_string();
+            if s == "pub" || s == "async" || s == "const" || s == "fn" {
+                tokens.push(iter.next().unwrap());
+            } else {
+                break;
+            }
+        }
     }
 
-    return Err(ParseError);
+    let mut tokens_iter = tokens.into_iter().peekable();
+    while let Some(token) = tokens_iter.next() {
+        match &token {
+            TokenTree::Ident(ident) if ident.to_string() == "pub" => {
+                vis = Some("pub".to_string())
+            }
+            TokenTree::Ident(ident) if ident.to_string() == "async" => {
+                is_async = true
+            }
+            TokenTree::Ident(ident) if ident.to_string() == "const" => {
+                is_const = true
+            }
+            TokenTree::Ident(ident) if ident.to_string() == "fn" => {
+                // Next token is function name
+                if let Some(TokenTree::Ident(fname)) = iter.next() {
+                    name = Some(fname.to_string());
+                } else {
+                    return Err(
+                        "Expected function name after 'fn'".to_string()
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    let name =
+        name.ok_or_else(|| "Expected function name after 'fn'".to_string())?;
+
+    // Parse arguments
+    let mut args = Vec::new();
+    let mut ret = None;
+    while let Some(token) = iter.next() {
+        match &token {
+            TokenTree::Group(group)
+                if group.delimiter() == Delimiter::Parenthesis =>
+            {
+                args = parse_fn_args(group.stream())?;
+            }
+            TokenTree::Punct(p) if *p == '-' => {
+                // Expect '->' for return type
+                if let Some(TokenTree::Punct(p2)) = iter.next() {
+                    if p2 == '>' {
+                        // Collect type tokens until '{' or ';'
+                        let mut ty = String::new();
+                        while let Some(t) = iter.peek() {
+                            match t {
+                                TokenTree::Group(g)
+                                    if g.delimiter() == Delimiter::Brace =>
+                                {
+                                    break
+                                }
+                                TokenTree::Punct(p) if *p == ';' => break,
+                                _ => {
+                                    ty.push_str(&token_to_string(
+                                        iter.next().unwrap(),
+                                    ));
+                                }
+                            }
+                        }
+                        ret = Some(ty.trim().to_string());
+                    } else {
+                        return Err("Expected '->' for function return type"
+                            .to_string());
+                    }
+                } else {
+                    return Err(
+                        "Expected '->' for function return type".to_string()
+                    );
+                }
+            }
+            TokenTree::Group(group)
+                if group.delimiter() == Delimiter::Brace =>
+            {
+                // Function body, skip
+                break;
+            }
+            TokenTree::Punct(p) if *p == ';' => {
+                // End of signature
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(FunctionSig {
+        vis,
+        is_async,
+        is_const,
+        name,
+        args,
+        ret,
+    })
 }
 
-pub struct SimplePath {
-    // pub elements:
+fn parse_fn_args(tokens: TokenStream) -> Result<Vec<Field>, String> {
+    let mut args = Vec::new();
+    let mut iter = tokens.into_iter().peekable();
+    while let Some(token) = iter.next() {
+        if let TokenTree::Ident(name) = &token {
+            // Expect :
+            if let Some(TokenTree::Punct(p)) = iter.next() {
+                if p == ':' {
+                    // Collect type tokens until , or end
+                    let mut ty = String::new();
+                    while let Some(t) = iter.peek() {
+                        match t {
+                            TokenTree::Punct(p) if *p == ',' => {
+                                iter.next();
+                                break;
+                            }
+                            _ => {
+                                ty.push_str(&token_to_string(
+                                    iter.next().unwrap(),
+                                ));
+                            }
+                        }
+                    }
+                    args.push(Field {
+                        name: name.to_string(),
+                        ty: ty.trim().to_string(),
+                    });
+                } else {
+                    return Err(format!(
+                        "Expected ':' after argument name '{}'",
+                        name
+                    ));
+                }
+            } else {
+                return Err(format!(
+                    "Expected ':' after argument name '{}'",
+                    name
+                ));
+            }
+        }
+    }
+    Ok(args)
 }
 
-/// ```
-/// SimplePath :
-///   ::? SimplePathSegment (:: SimplePathSegment)*
-/// ```
-pub fn parse_simple_path<
-    Span: Clone,
-    Stream: Iterator<Item = compat::TokenTree<Span, Stream>> + Clone,
->(
-    mut input: Peekable<Stream>,
-) -> Result<Type, ParseError> {
-    return Err(ParseError);
+fn token_to_string(token: TokenTree) -> String {
+    match token {
+        TokenTree::Ident(ident) => ident.to_string(),
+        TokenTree::Punct(p) => p.to_string(),
+        TokenTree::Literal(lit) => lit.to_string(),
+        TokenTree::Group(_) => String::from("<group>"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compat::{Delimiter, Group, TokenStream, TokenTree};
+    use super::*;
+
+    #[test]
+    fn parses_basic_struct() {
+        let tokens = "struct Foo { x: i32 }".parse::<TokenStream>().unwrap();
+        let decls = parse_type_decls(tokens).expect("Should parse");
+        assert_eq!(
+            decls,
+            vec![TypeDecl::Struct {
+                name: "Foo".into(),
+                fields: vec![Field {
+                    name: "x".into(),
+                    ty: "i32".into()
+                }]
+            }]
+        );
+    }
+
+    #[test]
+    fn parses_generic_struct() {
+        let tokens = "struct Foo<T> { x: T }".parse::<TokenStream>().unwrap();
+        let decls = parse_type_decls(tokens).expect("Should parse");
+        assert_eq!(
+            decls,
+            vec![TypeDecl::Struct {
+                name: "Foo".into(),
+                fields: vec![Field {
+                    name: "x".into(),
+                    ty: "T".into()
+                }]
+            }]
+        );
+    }
 }

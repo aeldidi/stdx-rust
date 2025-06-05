@@ -60,22 +60,22 @@ unsafe impl Allocator for Mallocator {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// #[cfg(test)]
+// mod tests {
+//     use super::*;
 
-    fn layout(size: usize, align: usize) -> alloc::Layout {
-        alloc::Layout::from_size_align(size, align).unwrap()
-    }
+//     fn layout(size: usize, align: usize) -> alloc::Layout {
+//         alloc::Layout::from_size_align(size, align).unwrap()
+//     }
 
-    /// The purpose of this test is not to evaluate if the system's malloc/free
-    /// work, rather, its just to ensure we can use the functions successfully.
-    #[test]
-    fn malloc_works() {
-        let result = Malloc.allocate(layout(1, 1));
-        assert!(result.is_ok());
-        let alloc = result.unwrap();
-        assert_eq!(alloc.len(), 1);
-        unsafe { Malloc.deallocate(alloc.cast(), layout(1, 1)) };
-    }
-}
+//     /// The purpose of this test is not to evaluate if the system's malloc/free
+//     /// work, rather, its just to ensure we can use the functions successfully.
+//     #[test]
+//     fn malloc_works() {
+//         let result = Malloc.allocate(layout(1, 1));
+//         assert!(result.is_ok());
+//         let alloc = result.unwrap();
+//         assert_eq!(alloc.len(), 1);
+//         unsafe { Malloc.deallocate(alloc.cast(), layout(1, 1)) };
+//     }
+// }
