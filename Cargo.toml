@@ -9,4 +9,4 @@ publish = false
 
 [dependencies]
 stdx_soa = { path = "./soa" }
-stdx_rust = { path = "./rust" }
+stdx_core = { path = "./core" }

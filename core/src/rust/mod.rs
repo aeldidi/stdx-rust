@@ -1,9 +1,18 @@
 //! A minimal rust parser suitable for writing basic proc macros. Currently
 //! only supports parsing type declarations and function declarations.
 
-mod compat;
+mod token_stream;
 
-use compat::{Delimiter, TokenStream, TokenTree};
+pub use token_stream::{Delimiter, TokenStream, TokenTree};
+
+use core::iter;
+
+use alloc::{
+    format,
+    string::{String, ToString},
+    vec,
+    vec::Vec,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeDecl {
@@ -145,12 +154,12 @@ fn parse_struct_fields(tokens: TokenStream) -> Result<Vec<Field>, String> {
         if let TokenTree::Ident(name) = &token {
             // Expect :
             if let Some(TokenTree::Punct(p)) = iter.next() {
-                if p == ':' {
+                if p.as_char() == ':' {
                     // Collect type tokens until , or end
                     let mut ty = String::new();
                     while let Some(t) = iter.peek() {
                         match t {
-                            TokenTree::Punct(p) if *p == ',' => {
+                            TokenTree::Punct(p) if p.as_char() == ',' => {
                                 iter.next();
                                 break;
                             }
@@ -206,7 +215,7 @@ fn parse_enum_variants(
                         });
                         // Skip trailing comma if present
                         if let Some(TokenTree::Punct(p)) = iter.peek() {
-                            if *p == ',' {
+                            if p.as_char() == ',' {
                                 iter.next();
                             }
                         }
@@ -222,7 +231,7 @@ fn parse_enum_variants(
             });
             // Skip trailing comma if present
             if let Some(TokenTree::Punct(p)) = iter.peek() {
-                if *p == ',' {
+                if p.as_char() == ',' {
                     iter.next();
                 }
             }
@@ -233,7 +242,7 @@ fn parse_enum_variants(
 
 fn parse_function_sig(
     first_token: &TokenTree,
-    iter: &mut std::iter::Peekable<impl Iterator<Item = TokenTree>>,
+    iter: &mut iter::Peekable<impl Iterator<Item = TokenTree>>,
 ) -> Result<FunctionSig, String> {
     let mut vis = None;
     let mut is_async = false;
@@ -291,10 +300,10 @@ fn parse_function_sig(
             {
                 args = parse_fn_args(group.stream())?;
             }
-            TokenTree::Punct(p) if *p == '-' => {
+            TokenTree::Punct(p) if p.as_char() == '-' => {
                 // Expect '->' for return type
                 if let Some(TokenTree::Punct(p2)) = iter.next() {
-                    if p2 == '>' {
+                    if p2.as_char() == '>' {
                         // Collect type tokens until '{' or ';'
                         let mut ty = String::new();
                         while let Some(t) = iter.peek() {
@@ -304,7 +313,9 @@ fn parse_function_sig(
                                 {
                                     break
                                 }
-                                TokenTree::Punct(p) if *p == ';' => break,
+                                TokenTree::Punct(p) if p.as_char() == ';' => {
+                                    break
+                                }
                                 _ => {
                                     ty.push_str(&token_to_string(
                                         iter.next().unwrap(),
@@ -329,7 +340,7 @@ fn parse_function_sig(
                 // Function body, skip
                 break;
             }
-            TokenTree::Punct(p) if *p == ';' => {
+            TokenTree::Punct(p) if p.as_char() == ';' => {
                 // End of signature
                 break;
             }
@@ -354,12 +365,12 @@ fn parse_fn_args(tokens: TokenStream) -> Result<Vec<Field>, String> {
         if let TokenTree::Ident(name) = &token {
             // Expect :
             if let Some(TokenTree::Punct(p)) = iter.next() {
-                if p == ':' {
+                if p.as_char() == ':' {
                     // Collect type tokens until , or end
                     let mut ty = String::new();
                     while let Some(t) = iter.peek() {
                         match t {
-                            TokenTree::Punct(p) if *p == ',' => {
+                            TokenTree::Punct(p) if p.as_char() == ',' => {
                                 iter.next();
                                 break;
                             }
@@ -402,7 +413,7 @@ fn token_to_string(token: TokenTree) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::compat::{Delimiter, Group, TokenStream, TokenTree};
+    use super::token_stream::{Delimiter, Group, TokenStream, TokenTree};
     use super::*;
 
     #[test]

@@ -7,4 +7,4 @@ edition = "2021"
 proc_macro = true
 
 [dependencies]
-stdx_rust = { path = "../rust" }
+stdx_core = { path = "../core" }

@@ -59,6 +59,6 @@ pub struct Url<A: Allocator = Global> {
     fragment: Option<Vec<u8, A>>,
 }
 
-impl<A: Allocator> Url<A> {
-    pub fn parse(input: &str) -> Self {}
-}
+// impl<A: Allocator> Url<A> {
+//     pub fn parse(input: &str) -> Self {}
+// }
